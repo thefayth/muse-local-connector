@@ -29,6 +29,11 @@ verification.json
 audit.jsonl
 connector-process.json
 tunnel-process.json
+desktop-context.json
+.desktop-context.lock
+supervisor-process.json
+ssh-relay-process.json
+startup-task.json
 
 # Editor and OS files
 .vscode/

@@ -3,12 +3,48 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { createInterface } from 'node:readline';
+import { createHash } from 'node:crypto';
+import { resolve } from 'node:path';
 import { recordProof, expandScope, validateControllerContext } from '../src/cli.mjs';
 
 test('a direct launcher cannot use another chat as its controller', () => {
   assert.throws(() => validateControllerContext({ controllerThreadId: 'controller-a' }, { CODEX_THREAD_ID: 'controller-b', CODEX_APP_TOOLS_PIPE_PATH: 'test-context' }), /different|match/);
   assert.throws(() => validateControllerContext({}, {}), /Codex|context/);
   assert.equal(validateControllerContext({}, { CODEX_THREAD_ID: 'controller-a', CODEX_APP_TOOLS_PIPE_PATH: 'test-context' }), 'controller-a');
+});
+
+test('dynamic context startup preserves the configured controller without inherited desktop variables', () => {
+  const controllerThreadId = '019a0000-0000-7000-8000-000000000001';
+  const desktopContextFile = join(tmpdir(), 'muse-context.json');
+  assert.equal(validateControllerContext({ controllerThreadId, desktopContextFile }, {}), controllerThreadId);
+  assert.throws(() => validateControllerContext({ desktopContextFile }, {}), /controller/i);
+  assert.throws(() => validateControllerContext({ controllerThreadId, desktopContextFile: 'relative.json' }, {}), /absolute/i);
+});
+
+test('a supervised CLI waits for fresh desktop context and shuts down gracefully over IPC', { timeout: 5000 }, async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'muse-supervised-cli-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const configPath = join(dataDir, 'config.json');
+  const token = 'test-key-for-local-supervisor';
+  await writeFile(configPath, JSON.stringify({ dataDir, port: 0, tokenSha256: createHash('sha256').update(token).digest('hex'), controllerThreadId: '019a0000-0000-7000-8000-000000000001', desktopContextFile: join(dataDir, 'desktop-context.json'), allowedThreadIds: [] }));
+  const env = { ...process.env };
+  delete env.CODEX_THREAD_ID;
+  delete env.CODEX_APP_TOOLS_PIPE_PATH;
+  const child = spawn(process.execPath, [resolve('src/cli.mjs'), '--config', configPath], { env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  child.stderr.resume();
+  const lines = createInterface({ input: child.stdout });
+  const [started] = await once(lines, 'line');
+  const port = started.match(/127\.0\.0\.1:(\d+)/)?.[1];
+  assert.ok(port, 'The gateway must start while desktop context is unavailable');
+  const response = await fetch(`http://127.0.0.1:${port}/v1/tasks`, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(response.status, 503);
+  const exited = once(child, 'exit');
+  child.send({ type: 'connector-shutdown' });
+  assert.equal((await exited)[0], 0);
 });
 
 test('expansion requires matching completed jobs and a real computer evidence file', async t => {

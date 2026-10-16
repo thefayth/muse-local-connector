@@ -2,7 +2,7 @@
 
 Use a remote assistant such as Muse to find and continue existing chats in the Codex desktop app on your computer. Requests go to those chats through the desktop's own task tools. Computer requests go to a selected chat as instructions, where its available tools and normal action rules apply.
 
-**Experimental.** This prototype depends on the app-tools runtime bundled with Codex desktop. Start it from inside a Codex execution environment that provides the app-tools connection and the caller's chat ID. It is not a standalone Codex CLI integration. A desktop restart or IPC reset may require restarting the connector.
+**Experimental.** This prototype depends on the app-tools runtime bundled with Codex desktop. Manual launch uses a Codex execution environment; optional automatic startup uses a Codex-managed MCP registrar to refresh that context. It is not a standalone Codex CLI integration. Bundled runtime changes can require compatibility work.
 
 This project is independently developed and is not affiliated with Meta, Muse, or OpenAI.
 
@@ -78,6 +78,8 @@ To put the existing key on your local clipboard for a secure connector credentia
 Starting from an unrelated terminal will not recreate the desktop IPC context. If the app-tools connection is unavailable, fix the launch context instead of supplying guessed IPC addresses or copying internal pipe credentials.
 
 See [Muse setup](docs/muse-setup.md) for remote connection and the pilot checks. Read [SECURITY.md](SECURITY.md) before exposing the listener through a tunnel.
+
+For a fixed URL, Windows logon startup, and fresh Codex context registration, see [automatic startup](docs/automatic-startup.md). The logon task can launch Codex and supervise the gateway and a restricted SSH relay. It preserves existing jobs and does not send instructions on startup.
 
 ## HTTP interface
 

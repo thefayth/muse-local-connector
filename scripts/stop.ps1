@@ -15,6 +15,17 @@ $configuration = Get-Content -LiteralPath $Config -Raw | ConvertFrom-Json
 $DataDir = [IO.Path]::GetFullPath($configuration.dataDir)
 $sourcePath = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\src\cli.mjs')).Path
 
+if (Test-Path -LiteralPath (Join-Path $DataDir 'supervisor-process.json')) {
+    if ($KeepTunnel) { throw 'Supervised startup manages the gateway and relay together. Omit -KeepTunnel to stop this installation.' }
+    $supervisorPath = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\src\supervisor.mjs')).Path
+    $supervisorRecord = Get-Content -LiteralPath (Join-Path $DataDir 'supervisor-process.json') -Raw | ConvertFrom-Json
+    if ($supervisorRecord.configPath -ine $Config) { throw 'The supervisor belongs to another configuration; it was left running.' }
+    & $supervisorRecord.executable $supervisorPath stop --config $Config
+    if ($LASTEXITCODE -ne 0) { throw 'The supervisor could not be stopped safely. Inspect its private log.' }
+    Write-Host 'Stopped the supervised connector and relay.'
+    return
+}
+
 function Stop-TrackedProcess {
     param([string]$RecordPath, [string]$ExpectedName, [string[]]$ExpectedArguments)
     if (-not (Test-Path -LiteralPath $RecordPath)) { return }

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { createHash } from 'node:crypto';
+import { readDesktopContext } from './context-bridge.mjs';
 
 const ALLOWED_TOOLS = new Set(['list_threads', 'list_archived_threads', 'read_thread', 'send_message_to_thread', 'wait_threads']);
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
@@ -31,8 +32,10 @@ export function discoverAppToolsServer(env = process.env) {
 // Standard MCP stdio only. The installed Codex server owns its native IPC implementation.
 export class DesktopMcpClient {
   constructor(options = {}) {
-    this.env = options.env || process.env;
+    this.env = { ...(options.env || process.env) };
     this.callerThreadId = options.callerThreadId || this.env.CODEX_THREAD_ID;
+    this.desktopContextFile = options.desktopContextFile;
+    this.contextRegistrationId = null;
     this.serverPath = options.serverPath;
     this.processFactory = options.processFactory || spawn;
     this.requestTimeoutMs = options.requestTimeoutMs || 30000;
@@ -45,9 +48,20 @@ export class DesktopMcpClient {
   }
 
   async start() {
-    if (this.ready) return;
     if (this.starting) return this.starting;
-    this.starting = this.startInternal();
+    this.starting = (async () => {
+      if (this.desktopContextFile) {
+        const context = await readDesktopContext(this.desktopContextFile, this.callerThreadId);
+        if (this.contextRegistrationId !== context.registrationId) {
+          await this.close();
+          this.env.CODEX_APP_TOOLS_PIPE_PATH = context.pipePath;
+          this.contextRegistrationId = context.registrationId;
+        } else if (this.env.CODEX_APP_TOOLS_PIPE_PATH !== context.pipePath) {
+          throw failure('Codex desktop context changed without a new registration.', 'desktop_context_unavailable', 503);
+        }
+      }
+      if (!this.ready) await this.startInternal();
+    })();
     try { await this.starting; }
     catch (error) { await this.close(); throw error; }
     finally { this.starting = null; }

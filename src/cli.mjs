@@ -1,5 +1,5 @@
 import { readFile, stat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createConnector, hasReceipt, saveJson, verifyExpansion } from './server.mjs';
 import { createDesktopBackend } from './desktop-backend.mjs';
@@ -10,6 +10,11 @@ async function configuration(configPath) {
 }
 
 export function validateControllerContext(config, env = process.env) {
+  if (config.desktopContextFile) {
+    if (!isAbsolute(config.desktopContextFile)) throw new Error('desktopContextFile must be an absolute private path.');
+    if (!config.controllerThreadId) throw new Error('Dynamic context requires the original configured controller chat.');
+    return config.controllerThreadId;
+  }
   if (!env.CODEX_APP_TOOLS_PIPE_PATH || !env.CODEX_THREAD_ID) throw new Error('Start the connector from a Codex desktop execution context.');
   if (config.controllerThreadId && config.controllerThreadId !== env.CODEX_THREAD_ID) throw new Error('The configured controller chat does not match this Codex context. Start from the original controller chat.');
   return env.CODEX_THREAD_ID;
@@ -63,7 +68,7 @@ async function main() {
   }
   if (command !== 'start') throw new Error('Supported commands: start, proof, expand, set-origin.');
   const config = await configuration(configPath);
-  const backend = createDesktopBackend({ callerThreadId: validateControllerContext(config) });
+  const backend = createDesktopBackend({ callerThreadId: validateControllerContext(config), desktopContextFile: config.desktopContextFile });
   const connector = await createConnector({ config, backend });
   await connector.listen();
   console.log(`Muse Local Connector listening on 127.0.0.1:${connector.address().port} (${config.allowAllTasks ? 'expanded' : 'pilot'}).`);
@@ -71,6 +76,7 @@ async function main() {
   const stop = async () => { if (closing) return; closing = true; await connector.close(); process.exit(0); };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
+  process.on('message', message => { if (message?.type === 'connector-shutdown') stop(); });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

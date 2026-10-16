@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { DesktopBackend, DesktopMcpClient } from '../src/desktop-backend.mjs';
 
 function fakeProcess(handle) {
@@ -80,6 +84,56 @@ test('missing desktop IPC fails with an actionable message without spawning', as
   const client = new DesktopMcpClient({ env: {}, callerThreadId: 'source', processFactory: () => { spawned = true; } });
   await assert.rejects(client.start(), /launch.*Codex|Codex.*launch/i);
   assert.equal(spawned, false);
+});
+
+test('dynamic context follows fresh registrations while preserving the original caller and never replays a send', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'muse-desktop-context-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const desktopContextFile = join(dataDir, 'desktop-context.json');
+  const callerThreadId = '019a0000-0000-7000-8000-000000000001';
+  const calls = [], children = [];
+  const publish = (pipePath, registrationId = randomUUID(), updatedAt = new Date().toISOString(), controllerThreadId = callerThreadId) => writeFile(desktopContextFile, JSON.stringify({ pipePath, registrationId, updatedAt, controllerThreadId, pid: process.pid }));
+  const client = new DesktopMcpClient({
+    desktopContextFile, callerThreadId, env: {}, serverPath: '/installed/server.mjs',
+    processFactory: (_command, _args, options) => {
+      const pipePath = options.env.CODEX_APP_TOOLS_PIPE_PATH;
+      const child = fakeProcess(message => {
+        if (message.method === 'initialize') return { result: {} };
+        calls.push({ pipePath, message });
+        if (message.params.name === 'send_message_to_thread') return { error: { code: -32000, message: 'Submission reply lost' } };
+        return { result: { structuredContent: { pipeGeneration: children.length } } };
+      });
+      child.once('exit', () => { child.stopped = true; });
+      children.push(child);
+      return child;
+    },
+  });
+  t.after(() => client.close());
+  await assert.rejects(client.callTool('read_thread', {}), error => error.statusCode === 503);
+  assert.equal(children.length, 0);
+  await publish('first-pipe');
+  assert.deepEqual(await client.callTool('read_thread', {}), { pipeGeneration: 1 });
+  await client.callTool('read_thread', {});
+  assert.equal(children.length, 1);
+  await publish('second-pipe');
+  assert.deepEqual(await client.callTool('read_thread', {}), { pipeGeneration: 2 });
+  assert.equal(children[0].stopped, true);
+  assert.equal(calls.at(-1).pipePath, 'second-pipe');
+  assert.ok(calls.every(call => call.message.params._meta['openai/threadId'] === callerThreadId));
+  await assert.rejects(client.callTool('send_message_to_thread', { threadId: 'target', prompt: 'Approved instruction' }), error => error.code === 'desktop_rpc_error');
+  assert.equal(calls.filter(call => call.message.params.name === 'send_message_to_thread').length, 1);
+  await publish('second-pipe', randomUUID(), new Date(Date.now() - 61000).toISOString());
+  await assert.rejects(client.callTool('read_thread', {}), error => error.statusCode === 503);
+  assert.equal(children[1].stopped, true);
+  const priorCallCount = calls.length;
+  await publish('wrong-caller-pipe', randomUUID(), new Date().toISOString(), '019a0000-0000-7000-8000-000000000002');
+  await assert.rejects(client.callTool('read_thread', {}), error => error.statusCode === 503);
+  assert.equal(calls.length, priorCallCount);
+  assert.equal(children.length, 2);
+  await writeFile(desktopContextFile, JSON.stringify({ pipePath: 'dead-owner-pipe', registrationId: randomUUID(), updatedAt: new Date().toISOString(), controllerThreadId: callerThreadId, pid: 2147483647 }));
+  await assert.rejects(client.callTool('read_thread', {}), error => error.statusCode === 503);
+  assert.equal(calls.length, priorCallCount);
+  assert.equal(children.length, 2);
 });
 
 test('task catalog preserves source IDs, deduplicates pinned tasks, and labels discovery limits', async () => {

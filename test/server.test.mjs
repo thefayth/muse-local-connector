@@ -4,6 +4,7 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
 import { createConnector } from '../src/server.mjs';
 
 const token = 'test-only-credential-that-is-never-a-live-key';
@@ -116,6 +117,27 @@ test('public schema and health contain no private configuration', async t => {
   assert.ok(!schema.includes(threadId));
   assert.ok(!schema.includes(f.dataDir));
   assert.ok(!schema.includes(token));
+});
+
+test('schema advertises an isolated reverse-proxy base path without widening host or origin access', async t => {
+  const f = await fixture(t, { config: { publicOrigin: 'https://connector.example', publicBasePath: '/local-connector' } });
+  const schema = await (await fetch(`${f.base}/openapi.json`)).json();
+  assert.deepEqual(schema.servers, [{ url: 'https://connector.example/local-connector' }]);
+  const withHost = host => new Promise((resolve, reject) => {
+    const req = httpRequest(`${f.base}/v1/status`, { headers: { Host: host, Authorization: `Bearer ${token}` } }, response => { response.resume(); response.once('end', () => resolve(response.statusCode)); });
+    req.once('error', reject); req.end();
+  });
+  assert.equal(await withHost('connector.example'), 200);
+  assert.equal(await withHost('other.example'), 403);
+  assert.equal((await f.request('/v1/status', { headers: { Origin: 'https://other.example' } })).status, 403);
+});
+
+test('rejects unsafe reverse-proxy base paths at startup', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'muse-base-path-test-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  for (const publicBasePath of ['/../outside', '//elsewhere', '/with?query', '/with#fragment', '/trailing/']) {
+    await assert.rejects(createConnector({ config: { dataDir, tokenSha256: 'a'.repeat(64), publicBasePath }, backend: {} }), /base.path/i);
+  }
 });
 
 test('expanded mode cannot start without both recorded live proofs', async t => {

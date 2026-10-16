@@ -101,6 +101,8 @@ export async function createConnector({ config, backend }) {
   if (!config.dataDir || !/^[a-f0-9]{64}$/i.test(config.tokenSha256 || '')) throw fail('A private dataDir and SHA-256 credential hash are required.');
   if (config.host && config.host !== '127.0.0.1') throw fail('The connector must bind to 127.0.0.1.');
   if (config.publicOrigin && new URL(config.publicOrigin).protocol !== 'https:') throw fail('publicOrigin must use HTTPS.');
+  const publicBasePath = config.publicBasePath || '';
+  if (typeof publicBasePath !== 'string' || (publicBasePath && !/^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(publicBasePath))) throw fail('publicBasePath must be a simple absolute base path without a trailing slash.');
   await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
   if (config.allowAllTasks) await verifyExpansion(config.dataDir);
   const jobFile = join(config.dataDir, 'jobs.json');
@@ -251,7 +253,7 @@ export async function createConnector({ config, backend }) {
       if (origin && !new Set([`http://127.0.0.1:${server.address()?.port}`, `http://localhost:${server.address()?.port}`, config.publicOrigin]).has(origin)) throw fail('Browser origin is not allowed.', 403, 'origin_not_allowed');
       const url = new URL(request.url, 'http://127.0.0.1');
       if (request.method === 'GET' && url.pathname === '/health') return send(200, { status: 'ok', name: 'muse-local-connector', version: '0.1.0' });
-      if (request.method === 'GET' && url.pathname === '/openapi.json') return send(200, openApi(config.publicOrigin));
+      if (request.method === 'GET' && url.pathname === '/openapi.json') return send(200, openApi(config.publicOrigin ? `${config.publicOrigin}${publicBasePath}` : undefined));
       if (request.method === 'GET' && url.pathname === '/') return send(200, { name: 'Muse Local Connector', setup: 'Add a custom connector using /openapi.json. Enter the bearer credential only in the secure credential prompt.', authentication: 'Authorization: Bearer <credential>', status: '/health' });
       const bearer = request.headers.authorization?.match(/^Bearer (\S+)$/)?.[1];
       if (!bearer || !timingSafeEqual(Buffer.from(digest(bearer), 'hex'), Buffer.from(config.tokenSha256, 'hex'))) return send(401, { error: 'unauthorized', message: 'A valid bearer credential is required.' });

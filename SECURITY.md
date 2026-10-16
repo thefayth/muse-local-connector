@@ -19,6 +19,8 @@ The connector uses an experimental runtime bundled with Codex desktop. Its launc
 
 Public health, setup, and schema endpoints must contain no private chat metadata. Status, task listing, task reading, job creation, and job polling require authentication.
 
+Automatic startup adds a private desktop-context lease and supervisor control nonce. Restrict the data directory to the owner, keep these records out of Git, and stop the supervisor before stopping its managed children. The native adapter rejects absent or stale context; it does not discover endpoints by guessing or replay failed sends. A persistent SSH relay should use a dedicated account/key constrained to one reverse loopback listener, with no shell or local forwarding.
+
 ## Scope and concurrency
 
 Pilot mode uses `allowedThreadIds` with `allowAllTasks: false`. Complete the existing-chat and harmless-computer checks before widening access. Wider task access enables sending instructions to more existing chats; it must not run the whole catalog on startup.
