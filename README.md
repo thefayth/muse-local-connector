@@ -41,6 +41,7 @@ The PC must be running, and Codex must remain available. Foreground app work may
 - Node.js 22 or later; no npm runtime dependencies.
 - For the Windows scripts, PowerShell 7.2 or later. Setup uses an existing compatible `CodexVault.psm1` when installed, or its own Windows DPAPI credential store for a fresh installation. No separate vault installation is needed.
 - A compatible Codex desktop build with bundled app-tools and a working local sign-in.
+- Codex CLI for expanded local task discovery. The catalog launches `codex app-server --stdio`; if its JavaScript entry point is not discovered automatically, set `MUSE_CODEX_JS` to the installed absolute `codex.js` path.
 - A launch environment created by Codex that supplies its app-tools IPC context and caller chat ID.
 - For remote access, an HTTPS tunnel or equivalent authenticated access path. The loopback URL alone is unreachable from Muse's cloud computer or a phone.
 - A remote client that can store and send a bearer credential securely and make REST requests.

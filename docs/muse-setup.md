@@ -94,4 +94,4 @@ Once that round trip works, repeat the harmless computer test from Muse. This ch
 
 ## Before a public GitHub release
 
-Publish portable source and synthetic examples only. Exclude private runtime state, tokens and hashes, config, personal paths, task IDs, prompt histories, screenshots, and tunnel details. Add public compatibility instructions based on the working pilot. The owner's successful local test is the release gate; preparing this folder does not publish it.
+Publish portable source and synthetic examples only. Exclude private runtime state, tokens and hashes, config, personal paths, task IDs, prompt histories, screenshots, and tunnel details. Add public compatibility instructions based on the working pilot. Complete both local proofs and repeat existing-chat and computer-action checks from Muse before release; preparing this folder does not publish it.
