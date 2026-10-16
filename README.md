@@ -145,6 +145,8 @@ The computer evidence must be a locally inspected PNG, JPEG, or WebP file. Recor
 | MCP transport | This gateway exposes REST/OpenAPI; a separate remote MCP adapter is not implied. |
 | Desktop internals | Experimental; bundled runtime changes can break compatibility. |
 
+The local pilot was verified on Windows with Node.js 22.22.1, Codex CLI 0.155.1, and the bundled Codex app-tools runtime 0.1.6. Compatibility with other desktop/runtime versions needs separate verification.
+
 ## Stop and recovery
 
 Stop the tunnel first to remove the external route, then stop the connector. Already accepted instructions may continue inside Codex; inspect the actual chat before deciding whether to interrupt it. Stopping the HTTP server is not proof that a chat's work stopped.

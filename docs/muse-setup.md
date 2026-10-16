@@ -51,6 +51,24 @@ Restart the gateway to load this setting while preserving the running tunnel. Re
 
 Use REST requests and short polling. This gateway does not require server-sent events. Do not describe it as an OAuth integration or a remote MCP server.
 
+### Optional manual transport: Tunnelmole
+
+A tunnel can work from the host browser yet return a provider-level `403` to Muse's remote computer. Check `/health` from the remote client before entering the credential. If the route is blocked there, choose another transport before changing gateway authentication.
+
+[Tunnelmole](https://tunnelmole.com/docs/) is an optional external provider; it is not a core dependency or managed by this project's launcher. Its generated HTTPS URL does not require a paid plan or custom domain. Install the pinned client in a private tools directory outside this repository:
+
+```powershell
+$connectorTools = Join-Path $env:LOCALAPPDATA 'MuseLocalConnectorTools'
+New-Item -ItemType Directory -Path $connectorTools -Force | Out-Null
+$env:TUNNELMOLE_TELEMETRY = '0'
+npm install --prefix "$connectorTools" --ignore-scripts --no-audit --no-fund --save-exact tunnelmole@2.4.0
+node --dns-result-order=ipv4first "$connectorTools/node_modules/tunnelmole/dist/bin/tunnelmole.js" 18761
+```
+
+Use your configured gateway port if it differs from `18761`. Keep this process running. Copy its actual HTTPS origin into the `set-origin` command above, then restart only the gateway using the existing `stop.ps1 -KeepTunnel` and `start.ps1` sequence. Update the remote schema URL to that same origin. Verify `https://YOUR-TUNNEL-HOST/health` from Muse's remote computer before secure key entry; host-browser success alone does not verify remote reachability.
+
+The stop script tracks the connector and its own Cloudflare process only. Stop a manually launched Tunnelmole process separately, for example with Ctrl+C in its terminal. The `-KeepTunnel` switch does not manage that manual process.
+
 ## 3. Configure Muse securely
 
 Use Muse's supported custom-service or connector configuration if it can import an OpenAPI schema and store a bearer credential securely:
