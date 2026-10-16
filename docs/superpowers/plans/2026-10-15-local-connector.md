@@ -31,5 +31,5 @@
 2. [x] Test desktop transport errors, metadata, and allowlisted calls. Implement src/desktop-backend.mjs and read-only src/local-catalog.mjs. Probe existing chat reads.
 3. [x] Implement src/cli.mjs and Windows setup/start/stop scripts. Verify loopback authentication and private persistence without leaking the credential.
 4. [x] Run a nonce-based job in one idle existing chat, inspect same-chat reply, then run a Calculator action and inspect the visual evidence. Store private receipts and proof records.
-5. [ ] Local expansion and authenticated HTTPS checks passed after both proofs. Remaining: connect Muse through its secure credential flow and repeat existing-chat and computer checks from Muse itself.
-6. [ ] Review source/tests/docs/license and scan the exact tracked source set for private information. Prepare the public GitHub package; publish only after the owner's verification condition is met.
+5. [x] Local expansion and authenticated HTTPS checks passed after both proofs. Connected Muse through its secure credential flow and repeated existing-chat and computer checks from Muse itself.
+6. [x] Reviewed source/tests/docs/license and scanned the tracked source for private information. Prepared the public GitHub package after the owner's verification condition was met.

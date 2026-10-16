@@ -145,7 +145,9 @@ The computer evidence must be a locally inspected PNG, JPEG, or WebP file. Recor
 | MCP transport | This gateway exposes REST/OpenAPI; a separate remote MCP adapter is not implied. |
 | Desktop internals | Experimental; bundled runtime changes can break compatibility. |
 
-The local pilot was verified on Windows with Node.js 22.22.1, Codex CLI 0.155.1, and the bundled Codex app-tools runtime 0.1.6. Compatibility with other desktop/runtime versions needs separate verification.
+The local pilot and Muse round trip were verified on October 15, 2026, on Windows with Node.js 22.22.1, Codex CLI 0.155.1, and the bundled Codex app-tools runtime 0.1.6. Muse authenticated through a temporary Tunnelmole route, continued an existing chat, retrieved its correlated reply, and requested a Calculator action through that same chat. The resulting `6 × 7 = 42` screenshot was independently inspected. Compatibility with other desktop/runtime versions needs separate verification.
+
+The tested temporary route sometimes took 30–60 seconds or timed out on reads. Use bounded read retries and retain request IDs for submissions; a slow response must not cause another instruction to be sent. Test the route from the actual remote client before entering credentials. See the [transport setup notes](docs/muse-setup.md#optional-manual-transport-tunnelmole).
 
 ## Stop and recovery
 
@@ -161,6 +163,6 @@ For a configuration-only restart with a temporary tunnel already running, use `s
 
 ## Open-source status
 
-The source is prepared for release under the [MIT License](LICENSE). Public GitHub publication is held until the owner's existing-chat and computer-action pilot works, Muse makes a verified call through the connector, and the release files pass a privacy review. Local installation and a prepared source tree do not mean a public repository has been created.
+Released under the [MIT License](LICENSE). The existing-chat and computer-action checks passed locally and from Muse before publication. The tracked release files passed a privacy review; personal configuration, credentials, chat records, and screenshots remain outside the source repository.
 
 For contributions, keep the core portable, use fake data in tests, document compatibility evidence, and avoid copying private Codex pipe implementations or user runtime files into the project.
