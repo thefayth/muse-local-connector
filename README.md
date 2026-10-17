@@ -150,6 +150,8 @@ The computer evidence must be a locally inspected PNG, JPEG, or WebP file. Recor
 
 The local pilot and Muse round trip were verified on October 15, 2026, on Windows with Node.js 22.22.1, Codex CLI 0.155.1, and the bundled Codex app-tools runtime 0.1.6. Muse authenticated through a temporary Tunnelmole route, continued an existing chat, retrieved its correlated reply, and requested a Calculator action through that same chat. The resulting `6 × 7 = 42` screenshot was independently inspected. Compatibility with other desktop/runtime versions needs separate verification.
 
+On October 16, 2026, a real Windows restart verified the current-user logon task, supervised gateway, restricted SSH relay, and early Codex context registration. Muse then authenticated through the fixed HTTPS route and completed fresh serial chat and Calculator jobs in the original chat. Both results returned to Muse with matching receipts; the fresh `7 × 8 = 56` screenshot was independently inspected. The serial run needed no network retries or action approvals. Earlier connection checks did need read retries, so this is not a latency guarantee. The phone app was not separately tested.
+
 The tested temporary route sometimes took 30–60 seconds or timed out on reads. Use bounded read retries and retain request IDs for submissions; a slow response must not cause another instruction to be sent. Test the route from the actual remote client before entering credentials. See the [transport setup notes](docs/muse-setup.md#optional-manual-transport-tunnelmole).
 
 ## Stop and recovery
