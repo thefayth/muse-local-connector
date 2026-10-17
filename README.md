@@ -24,7 +24,7 @@ The connector does not provide an arbitrary shell endpoint or direct mouse/keybo
 
 ```mermaid
 flowchart LR
-    Muse["Muse on phone or browser"] -->|"HTTPS + bearer authentication"| Tunnel["Temporary access tunnel"]
+    Muse["Muse on phone or browser"] -->|"HTTPS + bearer authentication"| Tunnel["Temporary tunnel or fixed HTTPS proxy + SSH relay"]
     Tunnel --> Gateway["Loopback connector on your PC"]
     Gateway --> Native["Bundled Codex app-tools runtime"]
     Native --> Chat["Selected existing desktop chat"]
@@ -42,7 +42,7 @@ The PC must be running, and Codex must remain available. Foreground app work may
 - For the Windows scripts, PowerShell 7.2 or later. Setup uses an existing compatible `CodexVault.psm1` when installed, or its own Windows DPAPI credential store for a fresh installation. No separate vault installation is needed.
 - A compatible Codex desktop build with bundled app-tools and a working local sign-in.
 - Codex CLI for expanded local task discovery. The catalog launches `codex app-server --stdio`; if its JavaScript entry point is not discovered automatically, set `MUSE_CODEX_JS` to the installed absolute `codex.js` path.
-- A launch environment created by Codex that supplies its app-tools IPC context and caller chat ID.
+- A launch environment created by Codex that supplies its app-tools IPC context and caller chat ID, directly to the manual gateway or through the optional local MCP registrar.
 - For remote access, an HTTPS tunnel or equivalent authenticated access path. The loopback URL alone is unreachable from Muse's cloud computer or a phone.
 - A remote client that can store and send a bearer credential securely and make REST requests.
 
@@ -73,7 +73,7 @@ node src/cli.mjs --config "<absolute-private-config.json>"
 
 To put the existing key on your local clipboard for a secure connector credential field, rerun setup with the same data directory and `-CopyKey`. Setup preserves the existing config and checks that it matches the stored credential. Clear the clipboard after entering the credential.
 
-`controllerThreadId` identifies the chat hosting the connector, while `allowedThreadIds` identifies tasks it may operate on; these serve different purposes. The caller identity can also come from `CODEX_THREAD_ID`. `CODEX_APP_TOOLS_PIPE_PATH` must be inherited from the Codex environment. `CODEX_APP_TOOLS_SERVER` optionally selects an explicit installed app-tools server path.
+`controllerThreadId` identifies the chat hosting the connector, while `allowedThreadIds` identifies tasks it may operate on; these serve different purposes. For manual launch, the caller identity can also come from `CODEX_THREAD_ID`, and `CODEX_APP_TOOLS_PIPE_PATH` must be inherited from the Codex environment. With automatic startup, the Codex-managed registrar inherits the desktop endpoint and renews a private context lease; the gateway preserves the configured controller identity. `CODEX_APP_TOOLS_SERVER` optionally selects an explicit installed app-tools server path.
 
 Starting from an unrelated terminal will not recreate the desktop IPC context. If the app-tools connection is unavailable, fix the launch context instead of supplying guessed IPC addresses or copying internal pipe credentials.
 
@@ -140,7 +140,8 @@ The computer evidence must be a locally inspected PNG, JPEG, or WebP file. Recor
 | Local Codex discovery | Expanded mode merges a paginated unarchived local catalog with desktop results. |
 | ChatGPT-backed discovery | Recent and pinned desktop results; full cloud history is not enumerated. |
 | Computer control | Instruction delegated to a selected existing desktop chat. |
-| Transport to Muse | REST with polling; temporary HTTPS tunnel for an external client. |
+| Transport to Muse | REST with polling through a temporary HTTPS tunnel or an optional fixed HTTPS proxy and supervised SSH relay. |
+| Automatic startup | Optional current-user Windows logon task, supervised gateway/relay, and fresh Codex context registration. |
 | Authentication | Bearer credential verified by the local connector. |
 | Windows credential storage | Existing Codex vault when available; otherwise a connector-owned DPAPI encrypted file. |
 | OAuth | Not implemented. |
@@ -153,15 +154,15 @@ The tested temporary route sometimes took 30–60 seconds or timed out on reads.
 
 ## Stop and recovery
 
-Stop the tunnel first to remove the external route, then stop the connector. Already accepted instructions may continue inside Codex; inspect the actual chat before deciding whether to interrupt it. Stopping the HTTP server is not proof that a chat's work stopped.
+For manual setup, `stop.ps1` stops its tracked Cloudflare tunnel and connector. For automatic startup, it stops the supervisor and its managed gateway/SSH relay together. Stop manually launched tunnel providers separately. Already accepted instructions may continue inside Codex; inspect the actual chat before deciding whether to interrupt it. Stopping the HTTP server is not proof that a chat's work stopped.
 
 ```powershell
 .\scripts\stop.ps1 -Config "<absolute-private-config.json>"
 ```
 
-After a connector restart, reconcile recorded job IDs against the desktop before sending follow-up work. After Codex restarts or its IPC resets, relaunch the connector from a fresh compatible Codex execution environment. Do not automatically replay uncertain submissions.
+After a connector restart, reconcile recorded job IDs against the desktop before sending follow-up work. With manual launch, relaunch the connector from a fresh compatible Codex execution environment after Codex restarts or its IPC resets. With automatic startup, wait for fresh registrar context and verify authenticated `/v1/status`; task requests return 503 while that context is unavailable. Do not automatically replay uncertain submissions.
 
-For a configuration-only restart with a temporary tunnel already running, use `stop.ps1 -Config "<absolute-private-config.json>" -KeepTunnel`, then start the gateway again. This preserves the tunnel hostname. See [Muse setup](docs/muse-setup.md) for the `set-origin` sequence.
+For a configuration-only restart in manual setup with a temporary tunnel already running, use `stop.ps1 -Config "<absolute-private-config.json>" -KeepTunnel`, then start the gateway again. This preserves the tunnel hostname. Supervised startup rejects `-KeepTunnel`; follow the [automatic startup](docs/automatic-startup.md) stop/start procedure instead. See [Muse setup](docs/muse-setup.md) for the manual `set-origin` sequence.
 
 ## Open-source status
 
