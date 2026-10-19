@@ -26,7 +26,8 @@ export class ManagedProcess {
   start() { this.done ||= this.run(); return this.done; }
 
   async run() {
-    for (let failures = 0; !this.stopping; failures++) {
+    let retryMs = 1000;
+    while (!this.stopping) {
       let code = null;
       try {
         const child = this.processFactory(this.command, this.args, { windowsHide: true, stdio: this.ipc ? ['ignore', 'ignore', 'ignore', 'ipc'] : 'ignore' });
@@ -43,10 +44,9 @@ export class ManagedProcess {
       }
       if (this.stopping) return;
       await this.log('exited', this.name, { code });
-      if (failures >= 5) { await this.log('retries_exhausted', this.name); return; }
-      const retryMs = Math.min(30000, 1000 * (2 ** failures));
-      await this.log('retry', this.name, { attempt: failures + 1, delayMs: retryMs });
+      await this.log('retry', this.name, { delayMs: retryMs });
       try { await this.sleep(retryMs, undefined, { signal: this.abort.signal }); } catch { return; }
+      retryMs = Math.min(30000, retryMs * 2);
     }
   }
 

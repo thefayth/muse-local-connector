@@ -30,19 +30,29 @@ test('SSH relay uses a named host, fixed loopback binds, and no interactive auth
   ]) assert.throws(() => relayArguments(relay, 18761));
 });
 
-test('unexpected crashes have five bounded retries and metadata-only logs', async () => {
-  let starts = 0;
+test('unexpected crashes recover after a long outage with capped delays and metadata-only logs', async t => {
+  let starts = 0, recovered;
+  const ready = new Promise(resolve => { recovered = resolve; });
   const retries = [], events = [];
   const worker = new ManagedProcess({ name: 'synthetic', command: 'fake-worker', args: ['private-value-not-to-log'] }, {
-    processFactory() { const process = child(++starts); queueMicrotask(() => process.emit('exit', 1)); return process; },
+    processFactory() {
+      const process = child(++starts);
+      if (starts <= 8) queueMicrotask(() => process.emit('exit', 1));
+      else recovered();
+      return process;
+    },
     sleep: async ms => { retries.push(ms); },
     log: async (...args) => { events.push(args); },
   });
-  await worker.start();
-  assert.equal(starts, 6);
-  assert.deepEqual(retries, [1000, 2000, 4000, 8000, 16000]);
-  assert.equal(events.at(-1)[0], 'retries_exhausted');
+  t.after(() => worker.stop());
+  const done = worker.start();
+  assert.equal(await Promise.race([ready.then(() => true), done.then(() => false)]), true);
+  assert.equal(starts, 9);
+  assert.deepEqual(retries, [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
+  assert.ok(!events.some(([event]) => event === 'retries_exhausted'));
   assert.ok(!JSON.stringify(events).includes('private-value-not-to-log'));
+  await worker.stop();
+  assert.equal(starts, 9);
 });
 
 test('intentional stop requests graceful gateway shutdown and never respawns', async () => {
@@ -56,31 +66,44 @@ test('intentional stop requests graceful gateway shutdown and never respawns', a
   assert.equal(starts, 1);
 });
 
-test('intentional stop cancels a pending crash retry', async () => {
+test('intentional stop cancels a capped crash retry without respawning', async t => {
   let starts = 0, retryStarted;
   const ready = new Promise(resolve => { retryStarted = resolve; });
   const worker = new ManagedProcess({ name: 'gateway', command: 'fake', args: [] }, {
     processFactory() { const process = child(++starts); queueMicrotask(() => process.emit('exit', 1)); return process; },
-    log: async event => { if (event === 'retry') retryStarted(); },
+    sleep: async (ms, value, options) => {
+      if (ms < 30000) return;
+      retryStarted();
+      await delay(ms, value, options);
+    },
   });
-  void worker.start();
-  await ready;
+  t.after(() => worker.stop());
+  const done = worker.start();
+  assert.equal(await Promise.race([ready.then(() => true), done.then(() => false)]), true);
   await worker.stop();
-  assert.equal(starts, 1);
+  assert.equal(worker.abort.signal.aborted, true);
+  assert.equal(starts, 6);
 });
 
-test('gateway and SSH crash budgets operate independently', async () => {
-  let gatewayStarts = 0, sshStarts = 0;
+test('gateway stays running while SSH recovers after a long outage', async t => {
+  let gatewayStarts = 0, sshStarts = 0, recovered;
+  const ready = new Promise(resolve => { recovered = resolve; });
   const gateway = new ManagedProcess({ name: 'gateway', command: 'fake', args: [], ipc: true }, { processFactory: () => { gatewayStarts++; return child(); } });
   const relay = new ManagedProcess({ name: 'ssh_relay', command: 'fake', args: [] }, {
-    processFactory() { const process = child(++sshStarts); queueMicrotask(() => process.emit('exit', 1)); return process; },
+    processFactory() {
+      const process = child(++sshStarts);
+      if (sshStarts <= 8) queueMicrotask(() => process.emit('exit', 1));
+      else recovered();
+      return process;
+    },
     sleep: async () => {},
   });
+  t.after(async () => { await relay.stop(); await gateway.stop(); });
   void gateway.start();
-  await relay.start();
-  assert.equal(sshStarts, 6);
+  const done = relay.start();
+  assert.equal(await Promise.race([ready.then(() => true), done.then(() => false)]), true);
+  assert.equal(sshStarts, 9);
   assert.equal(gatewayStarts, 1);
-  await gateway.stop();
 });
 
 test('a live control lease rejects a duplicate supervisor without changing its record', async t => {

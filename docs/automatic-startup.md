@@ -79,7 +79,7 @@ Muse's schema URL is then `https://connector.example/local-connector/openapi.jso
 
 The optional app ID comes from the installed Codex package manifest. The launcher resolves the current installed executable and opens the original controller using its documented `codex://threads/<id>` link, rather than restoring an unrelated chat or depending on an old protocol registry path. Installation creates one current-user, limited, interactive logon task and records its exact action. It does not start work in any chat. Read `startup-task.json` for the generated task name, then use `Start-ScheduledTask -TaskName '<recorded-name>'` to test the real action without rebooting.
 
-Check the fixed public health and authenticated native status. Test duplicate startup, stop the tracked gateway once and verify recovery, and confirm job history is unchanged. The supervisor rate-limits crash retries and preserves uncertainty rather than resending instructions. A complete computer reboot is a separate test; report whether it was performed.
+Check the fixed public health and authenticated native status. Test duplicate startup, stop the tracked gateway once and verify recovery, and confirm job history is unchanged. The supervisor keeps retrying failed gateway and relay processes independently, with delays doubling from 1 second to a 30-second cap, until intentionally stopped. A temporary network outage does not exhaust recovery, and reconnection never replays instructions. Windows also retries a failed startup task up to three times at one-minute intervals. A complete computer reboot is a separate test; report whether it was performed.
 
 ## Stop and uninstall
 

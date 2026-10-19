@@ -40,7 +40,7 @@ if ($PSCmdlet.ShouldProcess($taskName, 'Install current-user logon startup')) {
     $action = New-ScheduledTaskAction -Execute $pwshPath -Argument $arguments
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userSid
     $principal = New-ScheduledTaskPrincipal -UserId $userSid -LogonType Interactive -RunLevel Limited
-    $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
     $definition = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description $description
     Register-ScheduledTask -TaskPath '\' -TaskName $taskName -InputObject $definition -Force | Out-Null
     [ordered]@{
