@@ -17,6 +17,7 @@ try {
     $configPath = Join-Path $testDirectory 'config.json'
     $configuration = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
     if ($configuration.credentialStore.kind -ne 'windows-dpapi') { throw 'Fallback store was not selected.' }
+    if ($configuration.maxConcurrentJobs -ne 4) { throw 'New setup did not default to four concurrent jobs.' }
     $restoredSecret = Read-ConnectorCredential -Store $configuration.credentialStore -DataDir $testDirectory
     $secretPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($restoredSecret)
     $secretText = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($secretPointer)
@@ -32,10 +33,12 @@ try {
         if ((Get-Content -LiteralPath $file.FullName -Raw).Contains($secretText)) { throw 'A plaintext credential was written to disk.' }
     }
     $beforeHash = (Get-FileHash -LiteralPath (Join-Path $testDirectory 'muse-codex-local.api-key.dpapi')).Hash
-    & (Join-Path $PSScriptRoot 'setup-windows.ps1') -DataDir $testDirectory -VaultModulePath (Join-Path $testDirectory 'not-installed.psm1') | Out-Null
+    $beforeConfigHash = (Get-FileHash -LiteralPath $configPath).Hash
+    & (Join-Path $PSScriptRoot 'setup-windows.ps1') -DataDir $testDirectory -MaxConcurrentJobs 9 -VaultModulePath (Join-Path $testDirectory 'not-installed.psm1') | Out-Null
     $afterHash = (Get-FileHash -LiteralPath (Join-Path $testDirectory 'muse-codex-local.api-key.dpapi')).Hash
     if ($beforeHash -cne $afterHash) { throw 'Repeated setup replaced the credential.' }
-    Write-Host 'PASS: Windows DPAPI fallback, hash match, plaintext exclusion, existing-key preservation. Clipboard unchanged.'
+    if ($beforeConfigHash -cne (Get-FileHash -LiteralPath $configPath).Hash) { throw 'Repeated setup replaced existing configuration.' }
+    Write-Host 'PASS: Windows DPAPI fallback, hash match, plaintext exclusion, existing-key/config preservation, four-job default. Clipboard unchanged.'
 } finally {
     $env:CODEX_THREAD_ID = $priorControllerThread
     $secretText = $null

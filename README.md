@@ -12,6 +12,8 @@ This project is independently developed and is not affiliated with Meta, Muse, o
 - Submits an instruction to a chosen existing chat and returns a job ID.
 - Polls the desktop for that chat's progress and reply.
 - Records local job receipts and deduplicates repeated request IDs.
+- Runs up to four jobs across separate existing chats, with an adjustable local limit and a persistent queue.
+- Reserves one shared UI lane for declared browser and desktop jobs while background work runs in other chats.
 - Starts with a configured pilot chat, then permits the wider task catalog after verification.
 
 Expanded discovery covers unarchived local Codex tasks through a paginated local catalog. ChatGPT-backed discovery covers recent and pinned chats returned by the desktop; it does not claim to enumerate all cloud history. A known existing chat ID can be routed when the configured scope and native backend permit it.
@@ -27,6 +29,8 @@ flowchart LR
     Muse["Muse on phone or browser"] -->|"HTTPS + bearer authentication"| Tunnel["Temporary tunnel or fixed HTTPS proxy + SSH relay"]
     Tunnel --> Gateway["Loopback connector on your PC"]
     Gateway --> Native["Bundled Codex app-tools runtime"]
+    Owner["Configured controller chat"] -->|"desktop_context_status after runtime restart"| Registrar["Codex-managed context registrar"]
+    Registrar -->|"Fresh private lease"| Gateway
     Native --> Chat["Selected existing desktop chat"]
     Chat --> Tools["That chat's available tools"]
     Chat --> Result["Progress and result"]
@@ -69,7 +73,15 @@ Pass `-Tunnel` to that start script for a temporary remote route when the tunnel
 node src/cli.mjs --config "<absolute-private-config.json>"
 ```
 
-`MUSE_CONNECTOR_CONFIG` is an alternative way to supply the config path. `npm start` invokes the same CLI. Configuration includes `port` (default `18761`), `dataDir`, `tokenSha256`, `controllerThreadId`, `allowedThreadIds`, `allowAllTasks`, and `publicOrigin`. The listener is fixed to `127.0.0.1`.
+`MUSE_CONNECTOR_CONFIG` is an alternative way to supply the config path. `npm start` invokes the same CLI. Configuration includes `port` (default `18761`), `dataDir`, `tokenSha256`, `controllerThreadId`, `allowedThreadIds`, `allowAllTasks`, `maxConcurrentJobs` (default `4`), and `publicOrigin`. The listener is fixed to `127.0.0.1`.
+
+Set a different job limit locally, from `1` through `32`, then restart the connector using its normal stop/start procedure:
+
+```powershell
+node src/cli.mjs concurrency --max-jobs 6 --config "<absolute-private-config.json>"
+```
+
+This command changes only `maxConcurrentJobs`; it does not start work or restart the service. A missing setting also defaults to four. Initial Windows setup accepts `-MaxConcurrentJobs`; rerunning setup preserves existing configuration. Higher limits do not create Codex capacity or remove native account limits.
 
 To put the existing key on your local clipboard for a secure connector credential field, rerun setup with the same data directory and `-CopyKey`. Setup preserves the existing config and checks that it matches the stored credential. Clear the clipboard after entering the credential.
 
@@ -79,7 +91,7 @@ Starting from an unrelated terminal will not recreate the desktop IPC context. I
 
 See [Muse setup](docs/muse-setup.md) for remote connection and the pilot checks. Read [SECURITY.md](SECURITY.md) before exposing the listener through a tunnel.
 
-For a fixed URL, Windows logon startup, and fresh Codex context registration, see [automatic startup](docs/automatic-startup.md). The logon task can launch Codex and supervise the gateway and a restricted SSH relay. It preserves existing jobs and does not send instructions on startup.
+For a fixed URL, Windows logon startup, and fresh Codex context registration, see [automatic startup](docs/automatic-startup.md). The logon task can launch Codex and supervise the gateway and a restricted SSH relay. After Windows/Codex restarts or replaces its MCP runtime, the configured controller chat must call `desktop_context_status` before native requests can resume. Opening that chat and restoring HTTP/relay service does not activate its new registration. Startup preserves existing jobs and does not send instructions to activate the controller.
 
 ## HTTP interface
 
@@ -90,12 +102,13 @@ All `/v1` endpoints require `Authorization: Bearer <credential>`.
 | `GET /health` | Minimal public liveness response. |
 | `GET /openapi.json` | Public API schema without local task IDs or credentials. |
 | `GET /` | Public setup information without the credential. |
-| `GET /v1/status` | Read pilot/expanded mode and backend connection state without private identifiers. |
+| `GET /v1/status` | Read pilot/expanded mode, backend connection state, concurrency limit, and scheduler counts without private identifiers. |
 | `GET /v1/tasks?limit=50&search=example` | List tasks visible under the current configuration; use returned pagination for the expanded local catalog. |
 | `GET /v1/tasks/{threadId}?turnLimit=3` | Read recent context for a permitted task. |
 | `GET /v1/jobs` | List recent connector jobs. |
-| `POST /v1/jobs` | Send one instruction to a permitted existing chat. |
+| `POST /v1/jobs` | Queue one instruction for a permitted existing chat; dispatch when its chat and execution lane are free. |
 | `GET /v1/jobs/{jobId}` | Poll the actual desktop task status and retrieve a result. |
+| `POST /v1/jobs/{jobId}/controls` | Cancel, stop, edit, or correct one job, with a separate idempotent control receipt. |
 
 Example job body; IDs below are placeholders:
 
@@ -104,13 +117,51 @@ Example job body; IDs below are placeholders:
   "threadId": "existing-chat-id",
   "prompt": "Reply with the connector test phrase. Do not change files.",
   "kind": "task",
+  "execution": "background",
   "requestId": "unique-request-id"
 }
 ```
 
 `hostId` is optional when the desktop knows the execution host. `kind` is `task` or `computer`. Both kinds use the native desktop chat path. The job ID is returned by the connector; never derive it from a thread ID. Generate a new request ID for a new instruction. Retry a lost submission with the same request ID and exact body, then poll the returned job. Do not generate a new request ID merely because a response timed out.
 
-Before sending work, read the target task and confirm its identity. If it is busy or requires human input, report that state. Do not send the same instruction to several chats to work around uncertainty.
+Before sending work, read the target task and confirm its identity. A waiting job returns `202` with status `queued`, `waitingFor` reasons (`capacity`, `chat`, or `ui`), and known `blockingJobIds`. Retain that job and poll it; do not submit a duplicate to work around a busy chat or resource.
+
+If a job is `needs_review`, an explicit poll can recover a later final reply from the same chat when its original receipt matches and Codex is inactive. This updates the existing job without sending its instruction again. Unrelated replies and pending controls leave the review state unchanged.
+
+## Concurrent jobs and computer coordination
+
+The scheduler starts up to `maxConcurrentJobs` jobs at once, with at most one active connector job per existing chat. Authenticated `/v1/status` reports `runningJobs`, `queuedJobs`, and `uiLaneBusy`. It independently checks running work every five seconds, so dispatching a waiting job does not depend on Muse polling the preceding job. Eligible work in another chat can proceed while a job waits for a busy resource.
+
+| `execution` | Use for | Scheduling |
+| --- | --- | --- |
+| `background` | Analysis, code, files, or HTTP/API/CLI work that will not use browser or desktop UI. | May run alongside jobs in other chats, within the configured cap. |
+| `ui` | Browser automation, forms, screenshots, native apps, mouse, or keyboard work. | Reserves the single shared UI lane until the job resolves. |
+
+Omitted `execution` defaults to `ui` for older clients. A `computer` job always uses the UI lane and rejects `execution: "background"`. Classify work conservatively: a web API call without UI can be background work; operating that API through a browser needs the UI lane. Submit independent jobs before waiting for results, then poll their separate IDs.
+
+This is coordination of declared connector jobs. Background prompts explicitly prohibit browser and desktop tools, but the connector does not intercept every native tool call or lock out a person or unrelated Codex task. Route competing UI work through the connector and avoid manual UI changes while its lane is occupied. Native tool permissions still apply.
+
+Unattempted queued prompts are saved privately in `pending-jobs.json` and may resume after restart. Resumed work is checked against the current chat scope; a removed chat's queued job fails without being sent and keeps its history. Once dispatch starts, uncertain outcomes are reconciled against the existing chat and are never automatically resent. Keep both pending state and receipts private; they can contain task instructions.
+
+## Individual job controls
+
+Send a control to the returned job ID with a new `requestId`. Reuse that ID and the exact body after a network timeout; a retry never sends the control twice. Job IDs, original submission IDs, and chat history are preserved.
+
+```json
+{ "action": "stop", "requestId": "unique-stop-operation" }
+```
+
+| Action | Queued, never submitted | Running or awaiting input |
+| --- | --- | --- |
+| `cancel` or `stop` | Removes the pending instruction and keeps its cancelled job record. | Sends a cooperative stop instruction to the same chat. |
+| `edit` | Replaces the pending prompt and increments its revision. | Rejected; use `correct`. |
+| `correct` | Replaces the pending prompt. | Sends the revised instruction once to the same chat. |
+
+For `edit` and `correct`, include `prompt` in the control body. An active stop or correction returns `requested`, which confirms delivery rather than completion. The original chat, capacity, and UI reservation remain held until Codex is inactive and returns the control's own receipt. Only then is a stop marked cancelled or a correction completed. Native approvals remain in force. Stop is cooperative and can take time to reach the running tool; it is not an operating-system process kill or an undo of work already performed.
+
+A native chat reported as `notLoaded` can acknowledge a control only when its latest turn is explicitly completed, its final reply belongs to that same turn, both job and control receipts match, and no attention flag is present.
+
+Only one active control can be outstanding for a job. Uncertain, submitting, and finished jobs reject active controls; inspect the existing chat and use a deliberate new instruction to continue finished work. Controls that were uncertain at restart are never replayed. Private `controls.json` contains control provenance and prompt revisions; keep it with the other private state files and out of source control.
 
 ## Verification gate
 
@@ -121,6 +172,8 @@ Before sending work, read the target task and confirm its identity. If it is bus
 5. Connect Muse remotely and repeat a harmless end-to-end check. Local API success alone does not prove that Muse has connected.
 
 Keep personal verification receipts local. Tests should use synthetic IDs and fake desktop responses. Never publish an owner's chat catalog, prompts, screenshots, tunnel secrets, or runtime receipts as demonstration data.
+
+The [2026-10-20 verification record](docs/verification-2026-10-20.md) summarizes the tested concurrency, UI coordination, controls, and startup limits without private runtime data.
 
 After inspecting the actual replies and computer image, record the two completed correlated jobs using the IDs returned by the connector:
 
@@ -140,6 +193,7 @@ The computer evidence must be a locally inspected PNG, JPEG, or WebP file. Recor
 | Local Codex discovery | Expanded mode merges a paginated unarchived local catalog with desktop results. |
 | ChatGPT-backed discovery | Recent and pinned desktop results; full cloud history is not enumerated. |
 | Computer control | Instruction delegated to a selected existing desktop chat. |
+| Concurrent scheduling | Default four jobs, adjustable from 1 to 32; one active job per chat and one shared UI lane. |
 | Transport to Muse | REST with polling through a temporary HTTPS tunnel or an optional fixed HTTPS proxy and supervised SSH relay. |
 | Automatic startup | Optional current-user Windows logon task, supervised gateway/relay, and fresh Codex context registration. |
 | Authentication | Bearer credential verified by the local connector. |
@@ -152,6 +206,8 @@ The local pilot and Muse round trip were verified on October 15, 2026, on Window
 
 On October 16, 2026, a real Windows restart verified the current-user logon task, supervised gateway, restricted SSH relay, and early Codex context registration. Muse then authenticated through the fixed HTTPS route and completed fresh serial chat and Calculator jobs in the original chat. Both results returned to Muse with matching receipts; the fresh `7 × 8 = 56` screenshot was independently inspected. The serial run needed no network retries or action approvals. Earlier connection checks did need read retries, so this is not a latency guarantee. The phone app was not separately tested.
 
+That dated restart result predates the current explicit owner-registration requirement. It does not verify unattended native bootstrap for this version; automatic gateway/relay recovery and fresh owner registration are separate prerequisites.
+
 The tested temporary route sometimes took 30–60 seconds or timed out on reads. Use bounded read retries and retain request IDs for submissions; a slow response must not cause another instruction to be sent. Test the route from the actual remote client before entering credentials. See the [transport setup notes](docs/muse-setup.md#optional-manual-transport-tunnelmole).
 
 ## Stop and recovery
@@ -162,7 +218,7 @@ For manual setup, `stop.ps1` stops its tracked Cloudflare tunnel and connector. 
 .\scripts\stop.ps1 -Config "<absolute-private-config.json>"
 ```
 
-After a connector restart, reconcile recorded job IDs against the desktop before sending follow-up work. With manual launch, relaunch the connector from a fresh compatible Codex execution environment after Codex restarts or its IPC resets. With automatic startup, wait for fresh registrar context and verify authenticated `/v1/status`; task requests return 503 while that context is unavailable. Do not automatically replay uncertain submissions.
+After a connector restart, reconcile recorded job IDs against the desktop before sending follow-up work. With manual launch, relaunch the connector from a fresh compatible Codex execution environment after Codex restarts or its IPC resets. With automatic startup, activate a replacement registrar using `desktop_context_status` from the configured controller chat, then verify authenticated `/v1/status`; task requests return 503 while that context is unavailable. Do not automatically replay uncertain submissions.
 
 For a configuration-only restart in manual setup with a temporary tunnel already running, use `stop.ps1 -Config "<absolute-private-config.json>" -KeepTunnel`, then start the gateway again. This preserves the tunnel hostname. Supervised startup rejects `-KeepTunnel`; follow the [automatic startup](docs/automatic-startup.md) stop/start procedure instead. See [Muse setup](docs/muse-setup.md) for the manual `set-origin` sequence.
 

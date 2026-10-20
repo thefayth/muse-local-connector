@@ -34,6 +34,7 @@ export class DesktopMcpClient {
   constructor(options = {}) {
     this.env = { ...(options.env || process.env) };
     this.callerThreadId = options.callerThreadId || this.env.CODEX_THREAD_ID;
+    this.callerTurnId = options.callerTurnId;
     this.desktopContextFile = options.desktopContextFile;
     this.contextRegistrationId = null;
     this.serverPath = options.serverPath;
@@ -45,26 +46,71 @@ export class DesktopMcpClient {
     this.buffer = '';
     this.decoder = new StringDecoder('utf8');
     this.ready = false;
+    this.admission = Promise.resolve();
+    this.closeGeneration = 0;
+    this.drainWaiters = new Set();
   }
 
-  async start() {
-    if (this.starting) return this.starting;
-    this.starting = (async () => {
+  admit(action) {
+    const generation = this.closeGeneration;
+    const next = this.admission.then(async () => {
+      this.checkGeneration(generation);
+      return action(generation);
+    });
+    this.admission = next.catch(() => {});
+    return next;
+  }
+
+  checkGeneration(generation) {
+    if (generation !== this.closeGeneration) throw failure('Codex desktop connection closed.', 'desktop_closed', 503);
+  }
+
+  start() {
+    return this.admit(generation => this.ensureStarted(generation));
+  }
+
+  async ensureStarted(generation) {
+    try {
       if (this.desktopContextFile) {
-        const context = await readDesktopContext(this.desktopContextFile, this.callerThreadId);
-        if (this.contextRegistrationId !== context.registrationId) {
-          await this.close();
-          this.env.CODEX_APP_TOOLS_PIPE_PATH = context.pipePath;
-          this.contextRegistrationId = context.registrationId;
-        } else if (this.env.CODEX_APP_TOOLS_PIPE_PATH !== context.pipePath) {
+        let context = await readDesktopContext(this.desktopContextFile, this.callerThreadId);
+        this.checkGeneration(generation);
+        if (this.contextRegistrationId === context.registrationId && this.env.CODEX_APP_TOOLS_PIPE_PATH !== context.pipePath) {
           throw failure('Codex desktop context changed without a new registration.', 'desktop_context_unavailable', 503);
         }
+        if (this.env.CODEX_APP_TOOLS_PIPE_PATH !== context.pipePath) {
+          await this.waitForPending();
+          this.checkGeneration(generation);
+          // A lease can change or expire while an authorized request finishes.
+          context = await readDesktopContext(this.desktopContextFile, this.callerThreadId);
+          this.checkGeneration(generation);
+          if (this.contextRegistrationId === context.registrationId && this.env.CODEX_APP_TOOLS_PIPE_PATH !== context.pipePath) {
+            throw failure('Codex desktop context changed without a new registration.', 'desktop_context_unavailable', 503);
+          }
+          if (this.env.CODEX_APP_TOOLS_PIPE_PATH !== context.pipePath) await this.disconnect();
+          this.checkGeneration(generation);
+        }
+        this.env.CODEX_APP_TOOLS_PIPE_PATH = context.pipePath;
+        this.contextRegistrationId = context.registrationId;
+        this.callerTurnId = context.callerTurnId;
       }
+      this.checkGeneration(generation);
       if (!this.ready) await this.startInternal();
-    })();
-    try { await this.starting; }
-    catch (error) { await this.close(); throw error; }
-    finally { this.starting = null; }
+      this.checkGeneration(generation);
+    } catch (error) {
+      if (generation === this.closeGeneration && !this.pending.size) await this.disconnect();
+      throw error;
+    }
+  }
+
+  waitForPending() {
+    if (!this.pending.size) return Promise.resolve();
+    return new Promise(resolve => this.drainWaiters.add(resolve));
+  }
+
+  notifyDrained() {
+    if (this.pending.size) return;
+    for (const resolve of this.drainWaiters) resolve();
+    this.drainWaiters.clear();
   }
 
   async startInternal() {
@@ -72,7 +118,7 @@ export class DesktopMcpClient {
     const server = this.serverPath || discoverAppToolsServer(this.env);
     const child = this.processFactory(process.execPath, [server], { env: { ...this.env }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;
-    child.stdout.on('data', data => this.onData(data));
+    child.stdout.on('data', data => { if (this.child === child) this.onData(data); });
     child.stderr.on('data', () => {}); // Consume diagnostics without logging private host data.
     child.once('error', () => { if (this.child === child) this.fail(failure('Codex app-tools could not start.', 'desktop_start_failed', 503)); });
     child.once('exit', () => { if (this.child === child) this.fail(failure('Codex app-tools disconnected. Relaunch the connector from Codex.', 'desktop_disconnected', 503)); });
@@ -98,6 +144,7 @@ export class DesktopMcpClient {
         clearTimeout(waiting.timer);
         if (message.error) waiting.reject(failure(String(message.error.message || 'Codex rejected the tool request.').slice(0, 500), 'desktop_rpc_error'));
         else waiting.resolve(message.result);
+        this.notifyDrained();
       } else if (message.method && Object.hasOwn(message, 'id')) {
         this.send({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'This connector does not handle server-initiated requests.' } });
       }
@@ -115,17 +162,24 @@ export class DesktopMcpClient {
       const timer = setTimeout(() => {
         this.pending.delete(String(id));
         reject(failure('Codex desktop request timed out. Its outcome may be uncertain; check the target chat before retrying a send.', 'desktop_timeout', 504));
+        this.notifyDrained();
       }, timeoutMs);
       this.pending.set(String(id), { resolve, reject, timer });
       try { this.send({ jsonrpc: '2.0', id, method, params }); }
-      catch (error) { clearTimeout(timer); this.pending.delete(String(id)); reject(error); }
+      catch (error) { clearTimeout(timer); this.pending.delete(String(id)); reject(error); this.notifyDrained(); }
     });
   }
 
   async callTool(name, args, timeoutMs) {
     if (!ALLOWED_TOOLS.has(name)) throw failure('The requested desktop tool is not allowed by this connector.', 'desktop_tool_not_allowed', 403);
-    await this.start();
-    const result = await this.request('tools/call', { name, arguments: args, _meta: { 'openai/threadId': this.callerThreadId } }, timeoutMs);
+    const { response } = await this.admit(async generation => {
+      await this.ensureStarted(generation);
+      this.checkGeneration(generation);
+      // Admission ends after sending, so responses remain concurrent while a
+      // connection handoff cannot race between readiness and request creation.
+      return { response: this.request('tools/call', { name, arguments: args, _meta: { 'openai/threadId': this.callerThreadId, ...(this.callerTurnId ? { 'openai/turnId': this.callerTurnId } : {}) } }, timeoutMs) };
+    });
+    const result = await response;
     const texts = (result.content || []).filter(c => c.type === 'text').map(c => c.text);
     if (result.isError) throw failure(texts.join('\n').slice(0, 500) || 'Codex desktop tool failed.', 'desktop_tool_error');
     if (result.structuredContent) return result.structuredContent;
@@ -137,9 +191,15 @@ export class DesktopMcpClient {
     this.ready = false;
     for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(error); }
     this.pending.clear();
+    this.notifyDrained();
   }
 
   async close() {
+    this.closeGeneration += 1;
+    await this.disconnect();
+  }
+
+  async disconnect() {
     this.fail(failure('Codex desktop connection closed.', 'desktop_closed', 503));
     const child = this.child;
     this.child = null;
@@ -179,6 +239,8 @@ export class DesktopBackend {
   constructor(options = {}) {
     this.client = options.client || new DesktopMcpClient(options);
     this.localCatalog = options.localCatalog;
+    // Native waits require an active caller turn; the leased connector outlives it.
+    this.useReadPolling = Boolean(this.client.desktopContextFile);
   }
 
   async listThreads({ limit = 100, search, archived = false, cursor, source = 'codex' } = {}) {

@@ -9,6 +9,7 @@ import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const controllerThreadId = '019a0000-0000-7000-8000-000000000001';
+const callerTurnId = '019a0000-0000-7000-8000-000000000003';
 const bridgePath = resolve('src/context-bridge.mjs');
 
 async function fixture(t) {
@@ -41,6 +42,9 @@ function registrar(t, configPath, pipePath, callerThreadId) {
     child,
     output: () => output,
     diagnostics: () => diagnostics,
+    activate(metadata = { 'openai/threadId': controllerThreadId, 'openai/turnId': callerTurnId }) {
+      return this.request('tools/call', { name: 'desktop_context_status', arguments: {}, _meta: metadata });
+    },
     request(method, params = {}) {
       const requestId = ++id;
       const response = new Promise((resolveResponse, reject) => {
@@ -59,16 +63,19 @@ test('stdio registrar publishes a private fresh lease, exposes no endpoint, and 
   const bridge = registrar(t, configPath, pipePath);
   const initialized = await bridge.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } });
   assert.equal(initialized.result.protocolVersion, '2025-06-18');
+  await assert.rejects(readFile(contextPath), { code: 'ENOENT' });
+  assert.deepEqual((await bridge.activate()).result.structuredContent, { registered: true });
   const context = JSON.parse(await readFile(contextPath, 'utf8'));
   assert.equal(context.pipePath, pipePath);
   assert.equal(context.controllerThreadId, controllerThreadId);
+  assert.equal(context.callerTurnId, callerTurnId);
   assert.equal(context.pid, bridge.child.pid);
   assert.match(context.registrationId, /^[0-9a-f-]{36}$/i);
   assert.ok(Date.now() - Date.parse(context.updatedAt) < 3000);
   if (process.platform !== 'win32') assert.equal((await stat(contextPath)).mode & 0o777, 0o600);
   const listed = await bridge.request('tools/list');
   assert.equal(listed.result.tools.length, 1);
-  const status = await bridge.request('tools/call', { name: listed.result.tools[0].name, arguments: {} });
+  const status = await bridge.activate();
   assert.deepEqual(status.result.structuredContent, { registered: true });
   assert.equal(bridge.output().includes(pipePath), false);
   assert.equal(bridge.output().includes(controllerThreadId), false);
@@ -83,9 +90,11 @@ test('a newer registrar retains its lease across older heartbeats and older EOF'
   const { configPath, contextPath } = await fixture(t);
   const older = registrar(t, configPath, '\\\\.\\pipe\\older-muse-context');
   await older.request('initialize');
+  await older.activate();
   const first = JSON.parse(await readFile(contextPath, 'utf8'));
   const newer = registrar(t, configPath, '\\\\.\\pipe\\newer-muse-context');
   await newer.request('initialize');
+  await newer.activate();
   const second = JSON.parse(await readFile(contextPath, 'utf8'));
   assert.notEqual(second.registrationId, first.registrationId);
   await delay(15600);
@@ -96,7 +105,7 @@ test('a newer registrar retains its lease across older heartbeats and older EOF'
   older.child.stdin.end();
   await exited;
   assert.equal(JSON.parse(await readFile(contextPath, 'utf8')).registrationId, second.registrationId);
-  const status = await newer.request('tools/call', { name: 'desktop_context_status', arguments: {} });
+  const status = await newer.activate();
   assert.deepEqual(status.result.structuredContent, { registered: true });
   const newerExited = once(newer.child, 'exit');
   newer.child.stdin.end();
@@ -120,33 +129,35 @@ test('a registrar can recover a registration lock left by a process that no long
   await writeFile(join(dataDir, '.desktop-context.lock'), JSON.stringify({ pid: 2147483647 }));
   const bridge = registrar(t, configPath, '\\\\.\\pipe\\recovered-muse-context');
   await bridge.request('initialize');
+  await bridge.activate();
   assert.equal(JSON.parse(await readFile(contextPath, 'utf8')).pid, bridge.child.pid);
   const exited = once(bridge.child, 'exit');
   bridge.child.stdin.end();
   assert.equal((await exited)[0], 0);
 });
 
-test('live older registrars recover after a newer registrar exits or crashes using their own native context', { concurrency: true, timeout: 22000 }, async t => {
+test('an older registration cannot resurrect a prior caller turn after its replacement exits', { concurrency: true, timeout: 22000 }, async t => {
   await Promise.all(['EOF', 'crash'].map(mode => t.test(mode, async t => {
     const { configPath, contextPath } = await fixture(t);
     const originalPipe = `\\\\.\\pipe\\original-muse-context-${mode}`;
     const older = registrar(t, configPath, originalPipe);
     await older.request('initialize');
+    await older.activate();
     const original = JSON.parse(await readFile(contextPath, 'utf8'));
     const newer = registrar(t, configPath, `\\\\.\\pipe\\newer-muse-context-${mode}`);
     await newer.request('initialize');
+    await newer.activate({ 'x-codex-turn-metadata': JSON.stringify({ thread_id: controllerThreadId, turn_id: '019a0000-0000-7000-8000-000000000004' }) });
     assert.notEqual(JSON.parse(await readFile(contextPath, 'utf8')).registrationId, original.registrationId);
     const newerExited = once(newer.child, 'exit');
     if (mode === 'EOF') newer.child.stdin.end();
     else newer.child.kill('SIGKILL');
     await newerExited;
-    const deadline = Date.now() + 17000;
+    await delay(15600);
     let recovered;
-    while (Date.now() < deadline) {
-      try { recovered = JSON.parse(await readFile(contextPath, 'utf8')); } catch {}
-      if (recovered?.registrationId === original.registrationId) break;
-      await delay(100);
-    }
+    try { recovered = JSON.parse(await readFile(contextPath, 'utf8')); } catch {}
+    assert.notEqual(recovered?.registrationId, original.registrationId);
+    await older.activate();
+    recovered = JSON.parse(await readFile(contextPath, 'utf8'));
     assert.equal(recovered?.registrationId, original.registrationId);
     assert.equal(recovered.pipePath, originalPipe);
     assert.equal(recovered.controllerThreadId, controllerThreadId);
@@ -157,6 +168,27 @@ test('live older registrars recover after a newer registrar exits or crashes usi
     assert.equal((await exited)[0], 0);
   })));
 });
+
+test('a foreign or unidentified MCP runtime cannot replace the controller lease', { timeout: 5000 }, async t => {
+  const { configPath, contextPath } = await fixture(t);
+  const owner = registrar(t, configPath, '\\\\.\\pipe\\owner-context');
+  await owner.request('initialize');
+  await owner.activate();
+  const original = JSON.parse(await readFile(contextPath, 'utf8'));
+  const foreign = registrar(t, configPath, '\\\\.\\pipe\\foreign-context');
+  await foreign.request('initialize');
+  assert.equal(JSON.parse(await readFile(contextPath, 'utf8')).registrationId, original.registrationId);
+  for (const metadata of [null, {}, { 'openai/threadId': '019a0000-0000-7000-8000-000000000002', 'openai/turnId': callerTurnId }, { 'openai/threadId': controllerThreadId, 'openai/turnId': 'mcp-turn-7' }]) {
+    assert.deepEqual((await foreign.activate(metadata)).result.structuredContent, { registered: false });
+    assert.equal(JSON.parse(await readFile(contextPath, 'utf8')).registrationId, original.registrationId);
+  }
+  const nextTurn = '019a0000-0000-7000-8000-000000000005';
+  assert.deepEqual((await owner.activate({ 'x-codex-turn-metadata': { thread_id: controllerThreadId, turn_id: nextTurn } })).result.structuredContent, { registered: true });
+  const renewed = JSON.parse(await readFile(contextPath, 'utf8'));
+  assert.equal(renewed.registrationId, original.registrationId);
+  assert.equal(renewed.callerTurnId, nextTurn);
+});
+
 
 test('an explicit different executor identity cannot replace the configured controller registration', { timeout: 4000 }, async t => {
   const { configPath, contextPath } = await fixture(t);

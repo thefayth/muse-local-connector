@@ -27,7 +27,9 @@ Pilot mode uses `allowedThreadIds` with `allowAllTasks: false`. Complete the exi
 
 Local proof commands require completed jobs with their correlation receipts, and the computer proof requires an image file. An operator must inspect the actual computer evidence before recording that proof. An image signature check cannot verify what the image depicts.
 
-Read and identify the selected task before writing to it. A job may affect a project that already has uncommitted work or another active agent. Busy tasks must not receive duplicate prompts. Computer input requires particular care because several chats can share one foreground desktop; schedule those operations serially.
+Read and identify the selected task before writing to it. A job may affect a project that already has uncommitted work or another active agent. Busy tasks must not receive duplicate prompts. The scheduler permits up to four active jobs by default, configurable locally from 1 through 32, with one active connector job per chat. It queues waiting work instead of injecting an instruction into a busy chat.
+
+All declared browser and desktop UI work shares one exclusive lane. Set `execution: "ui"` for browser automation, forms, screenshots, mouse/keyboard, and native apps. Omitted execution defaults to `ui`, and a `computer` job cannot request background execution. Explicit `background` work receives instructions prohibiting UI tools and can run concurrently in other chats. These are routing guards, not interception of every Codex tool call. They do not prevent incorrectly classified prompts, unrelated tasks, manual computer input, or concurrent writes to the same files. Use separate workspaces for competing edits and keep other actors away from a reserved UI session.
 
 The `computer` kind is an instruction routed to an existing chat. It is not a raw shell, arbitrary executable, or direct input endpoint. The target chat's available tools and action policies still apply. The connector must not invent missing tools or promise to bypass a native approval request.
 
@@ -43,7 +45,7 @@ Prefer concise result summaries. Avoid copying raw logs, credentials, sensitive 
 
 Use one request ID for one instruction. If submission times out, retry that exact request ID and body or inspect its existing job; do not send a new instruction blindly. A changed body with an existing request ID should fail rather than replace its meaning.
 
-Jobs are stored in `dataDir/jobs.json`; audit records append metadata locally. Keep this directory private. A stopped connector or lost network response does not prove the desktop task stopped. Treat unreconciled operations as unknown until the native task status resolves them. Stop the remote route before maintenance, and inspect accepted jobs during recovery.
+Jobs are stored in `dataDir/jobs.json`; audit records append metadata locally. Unattempted queued prompts are held separately in `dataDir/pending-jobs.json` until the durable transition to submission. Private `controls.json` retains control receipts and prompt revisions. These files may contain sensitive task instructions. Keep the entire directory private and exclude pending state and controls from Git and diagnostic uploads. Only queued work never attempted for dispatch resumes automatically after restart. A stopped connector, a delivered stop instruction, or a lost network response does not prove the desktop task stopped. Active controls retain chat and UI reservations until a correlated native acknowledgement confirms inactivity. Treat unreconciled operations as unknown until the native task status resolves them; do not replay them. Stop the remote route before maintenance, and inspect accepted jobs during recovery.
 
 ## Repository hygiene
 

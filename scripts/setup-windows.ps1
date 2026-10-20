@@ -4,6 +4,7 @@ param(
     [string]$DataDir = (Join-Path $env:LOCALAPPDATA 'MuseLocalConnector'),
     [Alias('AllowedThreadIds')][string[]]$PilotThreadId = @(),
     [ValidateRange(1024, 65535)][int]$Port = 18761,
+    [ValidateRange(1, 32)][int]$MaxConcurrentJobs = 4,
     [string]$VaultModulePath = (Join-Path $env:USERPROFILE '.codex\secure-vault\CodexVault.psm1'),
     [switch]$CopyKey
 )
@@ -67,6 +68,7 @@ try {
             controllerThreadId = $env:CODEX_THREAD_ID
             allowedThreadIds = @($PilotThreadId | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
             allowAllTasks = $false
+            maxConcurrentJobs = $MaxConcurrentJobs
             publicOrigin = $null
         }
         $configuration | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding utf8NoBOM

@@ -7,6 +7,7 @@ flowchart LR
     Login[Windows sign-in] --> Startup[Per-user startup task]
     Startup --> Codex[Codex desktop]
     Codex --> Registrar[Local MCP context registrar]
+    Owner[Configured controller chat] -->|desktop_context_status| Registrar
     Registrar --> Context[Fresh private desktop context]
     Startup --> Supervisor
     Supervisor --> Gateway[Loopback gateway]
@@ -32,7 +33,9 @@ startup_timeout_sec = 10
 
 Set `desktopContextFile` in the existing private connector configuration to the absolute `desktop-context.json` path inside its existing `dataDir`. Preserve the original `controllerThreadId`, credential verifier, proof records, and jobs. Do not supply a guessed pipe address or replace the controller with an unrelated chat.
 
-The registrar publishes and renews a private lease from its current Codex launch environment. The gateway checks freshness before native tool calls and replaces its adapter when the registration changes. Uncertain sends are not replayed. Keep the context lease and all process records outside Git.
+From the configured controller chat, call `desktop_context_status` to activate registration. The registrar validates the actual caller chat and turn metadata supplied by Codex. Starting an MCP process in another chat cannot claim this connector's lease. The activated registrar renews its private lease while its runtime lives; after Codex replaces that runtime, activate the new one from the same controller chat. HTTP startup and the stable address can recover independently, but native execution waits for this owner registration.
+
+The gateway checks freshness before native tool calls and forwards the registered caller turn identity. A same-endpoint renewal preserves requests already in flight; an endpoint change drains those requests before reconnecting. Uncertain sends are not replayed. Keep the context lease and all process records outside Git.
 
 ## Configure a fixed HTTPS route
 

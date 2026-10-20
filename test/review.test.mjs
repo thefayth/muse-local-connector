@@ -123,7 +123,9 @@ test('a final-answer message keeps the job reserved until its native turn comple
   } });
   const accepted = await f.submit('streaming-final-proof');
   assert.equal((await f.settle(accepted.body.id)).status, 'running');
-  assert.equal((await f.submit('another-request-while-active')).status, 409);
+  const queued = await f.submit('another-request-while-active');
+  assert.equal(queued.status, 202);
+  assert.equal(queued.body.status, 'queued');
   assert.equal(f.sent(), 1);
   completed = true;
   assert.equal((await f.request(`/v1/jobs/${accepted.body.id}`)).body.status, 'completed');

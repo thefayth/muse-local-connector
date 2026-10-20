@@ -31,7 +31,15 @@ async function fixture(t, overrides = {}) {
     const response = await fetch(`${base}${path}`, { ...options, headers: { Authorization: `Bearer ${token}`, ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers } });
     return { status: response.status, body: await response.json() };
   };
-  return { connector, config, backend, calls, dataDir, request, base };
+  const settle = async id => {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const result = await request(`/v1/jobs/${id}`);
+      if (!['queued', 'submitting'].includes(result.body.status)) return result;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.fail('The synthetic job did not finish submitting');
+  };
+  return { connector, config, backend, calls, dataDir, request, settle, base };
 }
 
 test('requires authentication before revealing or touching tasks', async t => {
@@ -65,7 +73,7 @@ test('durable idempotency prevents duplicate submissions and rejects changed req
   assert.equal(first.status, 202);
   assert.equal(first.body.id, again.body.id);
   assert.equal((await f.request('/v1/jobs', { method: 'POST', body: JSON.stringify({ threadId, prompt: 'Different work.', requestId: 'request-unique' }) })).status, 409);
-  await new Promise(resolve => setTimeout(resolve, 30));
+  await f.settle(first.body.id);
   assert.equal(f.calls.filter(call => typeof call === 'object').length, 1);
   const persisted = await readFile(join(f.dataDir, 'jobs.json'), 'utf8');
   assert.ok(persisted.includes('request-unique'));
@@ -91,8 +99,7 @@ test('serializes jobs and refuses a busy existing desktop chat', async t => {
 test('a submission with uncertain outcome is never retried', async t => {
   const f = await fixture(t, { backend: { async sendMessage() { throw new Error('transport disconnected'); } } });
   const result = await f.request('/v1/jobs', { method: 'POST', body: JSON.stringify({ threadId, prompt: 'A check.', requestId: 'request-uncertain' }) });
-  await new Promise(resolve => setTimeout(resolve, 30));
-  const job = await f.request(`/v1/jobs/${result.body.id}`);
+  const job = await f.settle(result.body.id);
   assert.equal(job.body.status, 'unknown');
   assert.equal((await f.request('/v1/jobs', { method: 'POST', body: JSON.stringify({ threadId, prompt: 'A check.', requestId: 'request-uncertain' }) })).body.id, result.body.id);
 });
@@ -104,8 +111,7 @@ test('requires a matching receipt in a fresh reply before claiming completion', 
     async waitThread() { return sent ? { cursor: 'new', status: 'completed', finalText: 'Verified. Connector receipt: request-proof.' } : { cursor: 'old', status: 'idle' }; },
   } });
   const result = await f.request('/v1/jobs', { method: 'POST', body: JSON.stringify({ threadId, prompt: 'Check.', requestId: 'request-proof' }) });
-  await new Promise(resolve => setTimeout(resolve, 30));
-  const job = await f.request(`/v1/jobs/${result.body.id}`);
+  const job = await f.settle(result.body.id);
   assert.equal(job.body.status, 'completed');
   assert.match(job.body.result, /request-proof/);
 });

@@ -18,7 +18,7 @@ export async function readDesktopContext(file, controllerThreadId) {
     if (!isAbsolute(file) || !controllerThreadId || (await stat(file)).size > 65536) throw unavailable();
     const context = JSON.parse(await readFile(file, 'utf8'));
     const age = Date.now() - Date.parse(context.updatedAt);
-    if (context.controllerThreadId !== controllerThreadId || !UUID.test(context.registrationId || '') ||
+    if (context.controllerThreadId !== controllerThreadId || !UUID.test(context.registrationId || '') || !UUID.test(context.callerTurnId || '') ||
         typeof context.pipePath !== 'string' || !context.pipePath.trim() || context.pipePath.includes('\0') ||
         !Number.isInteger(context.pid) || context.pid < 1 || !processIsAlive(context.pid) ||
         !Number.isFinite(age) || age < -5000 || age > 60000) throw unavailable();
@@ -67,6 +67,17 @@ async function writeContext(file, context) {
   } finally { await unlink(temporary).catch(() => {}); }
 }
 
+function callerMetadata(metadata = {}) {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return {};
+  let turn = metadata['x-codex-turn-metadata'];
+  if (typeof turn === 'string') { try { turn = JSON.parse(turn); } catch { turn = null; } }
+  const first = keys => keys.map(key => metadata[key]).find(value => typeof value === 'string' && value.trim());
+  return {
+    threadId: first(['openai/threadId', 'openai/thread_id', 'codexThreadId', 'codex_thread_id', 'threadId', 'thread_id']) ?? turn?.thread_id ?? metadata.thread?.id,
+    turnId: first(['openai/turnId', 'openai/turn_id', 'codexTurnId', 'codex_turn_id', 'turnId', 'turn_id']) ?? turn?.turn_id ?? metadata.turn?.id,
+  };
+}
+
 // The launcher is a standard stdio MCP server. Native IPC remains owned by the
 // installed app-tools runtime; its environment forwarding is version-dependent.
 async function main() {
@@ -80,13 +91,12 @@ async function main() {
   if (config.desktopContextFile && resolve(config.desktopContextFile) !== file) throw unavailable();
   const registrationId = randomUUID();
   const context = { pipePath: process.env.CODEX_APP_TOOLS_PIPE_PATH, controllerThreadId: config.controllerThreadId, registrationId, pid: process.pid, updatedAt: new Date().toISOString() };
-  let closed = false, operations = Promise.resolve();
+  let closed = false, activated = false, operations = Promise.resolve();
   const serialized = action => { const next = operations.then(action); operations = next.catch(() => {}); return next; };
   const ownsLease = async () => {
     try { return (await readDesktopContext(file, config.controllerThreadId)).registrationId === registrationId; }
     catch { return false; }
   };
-  await withLeaseLock(config.dataDir, () => writeContext(file, context));
   const heartbeat = setInterval(() => {
     serialized(() => withLeaseLock(config.dataDir, async () => {
       let current;
@@ -94,7 +104,7 @@ async function main() {
         const stored = JSON.parse(await readFile(file, 'utf8'));
         current = await readDesktopContext(file, stored.controllerThreadId);
       } catch {}
-      if (!closed && (!current || current.registrationId === registrationId)) await writeContext(file, { ...context, updatedAt: new Date().toISOString() });
+      if (!closed && activated && current?.registrationId === registrationId) await writeContext(file, { ...context, updatedAt: new Date().toISOString() });
     })).catch(() => {});
   }, 15000);
   const shutdown = async () => {
@@ -117,9 +127,16 @@ async function main() {
       if (!Object.hasOwn(message, 'id')) return;
       if (message.method === 'initialize') respond({ id: message.id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'muse-desktop-context', version: '0.1.0' } } });
       else if (message.method === 'ping') respond({ id: message.id, result: {} });
-      else if (message.method === 'tools/list') respond({ id: message.id, result: { tools: [{ name: 'desktop_context_status', description: 'Report whether this Codex runtime owns the current local connector context registration.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false }, outputSchema: { type: 'object', properties: { registered: { type: 'boolean' } }, required: ['registered'], additionalProperties: false } }] } });
+      else if (message.method === 'tools/list') respond({ id: message.id, result: { tools: [{ name: 'desktop_context_status', description: 'Register the configured controller chat and its current caller turn using executor metadata, and report whether this runtime owns the local connector registration. Other chats cannot register.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false }, outputSchema: { type: 'object', properties: { registered: { type: 'boolean' } }, required: ['registered'], additionalProperties: false } }] } });
       else if (message.method === 'tools/call' && message.params?.name === 'desktop_context_status') {
-        const status = { registered: await ownsLease() };
+        const caller = callerMetadata(message.params._meta);
+        const authorized = caller.threadId === config.controllerThreadId && UUID.test(caller.turnId || '');
+        if (authorized && !closed) await withLeaseLock(config.dataDir, async () => {
+          context.callerTurnId = caller.turnId;
+          await writeContext(file, { ...context, updatedAt: new Date().toISOString() });
+          activated = true;
+        });
+        const status = { registered: authorized && await ownsLease() };
         respond({ id: message.id, result: { content: [{ type: 'text', text: JSON.stringify(status) }], structuredContent: status } });
       } else respond({ id: message.id, error: { code: -32601, message: 'Method or tool is not available.' } });
     }).catch(() => { respond({ id: null, error: { code: -32603, message: 'Desktop context is unavailable.' } }); });

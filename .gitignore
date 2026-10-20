@@ -25,6 +25,8 @@ exports/
 *.pid
 *.tmp
 jobs.json
+pending-jobs.json
+controls.json
 verification.json
 audit.jsonl
 connector-process.json

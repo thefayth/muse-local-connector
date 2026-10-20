@@ -3,12 +3,47 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { once } from 'node:events';
 import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
-import { recordProof, expandScope, validateControllerContext } from '../src/cli.mjs';
+import { recordProof, expandScope, setConcurrency, validateControllerContext } from '../src/cli.mjs';
+
+test('local concurrency adjustment preserves other private configuration and requires a bounded integer', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'muse-concurrency-config-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const configPath = join(dataDir, 'config.json');
+  const original = { dataDir, tokenSha256: 'synthetic-private-verifier', allowedThreadIds: ['synthetic-chat'], desktopContextFile: join(dataDir, 'context.json'), allowAllTasks: true, customSetting: { preserved: true } };
+  await writeFile(configPath, JSON.stringify(original));
+  for (const limit of [1, 4, 32]) {
+    await setConcurrency(configPath, limit);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), { ...original, maxConcurrentJobs: limit });
+  }
+  const beforeInvalid = await readFile(configPath, 'utf8');
+  for (const invalid of [undefined, null, true, 0, -1, 33, 1.5, NaN, Infinity, '', '1.5', '4x']) {
+    await assert.rejects(setConcurrency(configPath, invalid), /integer from 1 to 32/);
+    assert.equal(await readFile(configPath, 'utf8'), beforeInvalid);
+  }
+});
+
+test('concurrency CLI updates configuration without requiring desktop context or printing private fields', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'muse-concurrency-cli-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const configPath = join(dataDir, 'config.json');
+  const original = { tokenSha256: 'synthetic-private-verifier', controllerThreadId: 'synthetic-controller' };
+  await writeFile(configPath, JSON.stringify(original));
+  const env = { ...process.env };
+  delete env.CODEX_THREAD_ID;
+  delete env.CODEX_APP_TOOLS_PIPE_PATH;
+  const result = await promisify(execFile)(process.execPath, [resolve('src/cli.mjs'), 'concurrency', '--max-jobs', '6', '--config', configPath], { env, windowsHide: true });
+  assert.match(result.stdout, /Restart the connector to apply/);
+  assert.doesNotMatch(result.stdout + result.stderr, /synthetic-private|synthetic-controller/);
+  assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), { ...original, maxConcurrentJobs: 6 });
+  await assert.rejects(promisify(execFile)(process.execPath, [resolve('src/cli.mjs'), 'concurrency', '--max-jobs', '33', '--config', configPath], { env, windowsHide: true }), /integer from 1 to 32/);
+  assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), { ...original, maxConcurrentJobs: 6 });
+});
 
 test('a direct launcher cannot use another chat as its controller', () => {
   assert.throws(() => validateControllerContext({ controllerThreadId: 'controller-a' }, { CODEX_THREAD_ID: 'controller-b', CODEX_APP_TOOLS_PIPE_PATH: 'test-context' }), /different|match/);

@@ -46,6 +46,15 @@ export async function expandScope(configPath) {
   await saveJson(configPath, config);
 }
 
+export async function setConcurrency(configPath, maxConcurrentJobs) {
+  const validType = typeof maxConcurrentJobs === 'number' || (typeof maxConcurrentJobs === 'string' && /^\d+$/.test(maxConcurrentJobs));
+  const limit = Number(maxConcurrentJobs);
+  if (!validType || !Number.isInteger(limit) || limit < 1 || limit > 32) throw new Error('Supply --max-jobs with an integer from 1 to 32.');
+  const config = await configuration(configPath);
+  config.maxConcurrentJobs = limit;
+  await saveJson(configPath, config);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const option = name => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
@@ -57,6 +66,7 @@ async function main() {
     return;
   }
   if (command === 'expand') { await expandScope(configPath); console.log('Task scope expanded after both live proofs. Restart the connector to apply.'); return; }
+  if (command === 'concurrency') { await setConcurrency(configPath, option('--max-jobs')); console.log('Concurrency limit saved. Restart the connector to apply.'); return; }
   if (command === 'set-origin') {
     const config = await configuration(configPath);
     const url = new URL(option('--origin'));
@@ -66,7 +76,7 @@ async function main() {
     console.log('Public HTTPS origin saved. Restart the connector to apply.');
     return;
   }
-  if (command !== 'start') throw new Error('Supported commands: start, proof, expand, set-origin.');
+  if (command !== 'start') throw new Error('Supported commands: start, proof, expand, concurrency, set-origin.');
   const config = await configuration(configPath);
   const backend = createDesktopBackend({ callerThreadId: validateControllerContext(config), desktopContextFile: config.desktopContextFile });
   const connector = await createConnector({ config, backend });
