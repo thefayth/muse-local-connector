@@ -112,7 +112,7 @@ To verify concurrency, ask Muse to submit harmless background work in separate i
 
 - Stop the tunnel to remove the remote route. Stop the connector separately. Existing accepted desktop tasks may continue.
 - Keep the computer running and Codex available. Foreground computer work may require the desktop to remain unlocked.
-- After Codex restarts or its app-tools IPC resets, relaunch the connector from a fresh Codex environment.
+- Manual launch requires a fresh Codex environment after app-tools IPC resets. With the Windows reconnect worker configured, wait for automatic native recovery and verify authenticated `/v1/status`; do not ask the owner to reopen the controller chat on every restart.
 - Preserve job receipts across restarts and reconcile uncertain operations before sending replacements.
 - Keep private `pending-jobs.json` with job state. Only unattempted queued instructions resume automatically; dispatched or uncertain instructions are reconciled without replay.
 - A catalog entry may use a backend with different capabilities. Report the returned limitation rather than silently creating another chat.

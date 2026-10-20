@@ -12,11 +12,11 @@ const controllerThreadId = '019a0000-0000-7000-8000-000000000001';
 const callerTurnId = '019a0000-0000-7000-8000-000000000003';
 const bridgePath = resolve('src/context-bridge.mjs');
 
-async function fixture(t) {
+async function fixture(t, extra = {}) {
   const dataDir = await mkdtemp(join(tmpdir(), 'muse-context-test-'));
   t.after(() => rm(dataDir, { recursive: true, force: true }));
   const configPath = join(dataDir, 'config.json');
-  await writeFile(configPath, JSON.stringify({ dataDir, controllerThreadId }));
+  await writeFile(configPath, JSON.stringify({ dataDir, controllerThreadId, ...extra }));
   return { dataDir, configPath, contextPath: join(dataDir, 'desktop-context.json') };
 }
 
@@ -197,4 +197,26 @@ test('an explicit different executor identity cannot replace the configured cont
   assert.notEqual(code, 0);
   await assert.rejects(readFile(contextPath), { code: 'ENOENT' });
   assert.equal(bridge.diagnostics().includes(controllerThreadId), false);
+});
+
+test('automatic reconnect retains a genuine owner grant after the registering chat closes', async t => {
+  const { dataDir, configPath, contextPath } = await fixture(t, { desktopReconnect: { enabled: true, appUserModelId: 'Synthetic.Codex!App' } });
+  const bridge = registrar(t, configPath, '\\\\.\\pipe\\synthetic-owner-grant');
+  await bridge.request('initialize');
+  const grantPath = join(dataDir, 'desktop-owner.json');
+  assert.deepEqual((await bridge.activate({})).result.structuredContent, { registered: false });
+  await assert.rejects(readFile(grantPath), { code: 'ENOENT' });
+  assert.deepEqual((await bridge.activate()).result.structuredContent, { registered: true });
+  const grant = JSON.parse(await readFile(grantPath, 'utf8'));
+  assert.equal(grant.controllerThreadId, controllerThreadId);
+  assert.equal(grant.callerTurnId, callerTurnId);
+  const saved = await readFile(grantPath, 'utf8');
+  await bridge.activate({ 'openai/threadId': '019a0000-0000-7000-8000-000000000002', 'openai/turnId': callerTurnId });
+  assert.equal(await readFile(grantPath, 'utf8'), saved);
+  const exited = once(bridge.child, 'exit');
+  bridge.child.stdin.end();
+  await exited;
+  await assert.rejects(readFile(contextPath), { code: 'ENOENT' });
+  assert.equal(await readFile(grantPath, 'utf8'), saved);
+  assert.equal(bridge.output().includes(callerTurnId), false);
 });

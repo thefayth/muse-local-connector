@@ -90,6 +90,7 @@ export async function startSupervisor(configPath, options = {}) {
   const recordPath = join(dataDir, 'supervisor-process.json');
   const gatewayRecord = join(dataDir, 'connector-process.json');
   const relayRecord = join(dataDir, 'ssh-relay-process.json');
+  const reconnectRecord = join(dataDir, 'desktop-reconnect-process.json');
   const nonce = randomUUID();
   const workers = [];
   let stopping;
@@ -134,6 +135,14 @@ export async function startSupervisor(configPath, options = {}) {
   try {
     await saveJson(recordPath, { pid: process.pid, startedUtc: new Date(Date.now() - process.uptime() * 1000).toISOString(), executable: process.execPath, scriptPath, configPath, controlPort: control.address().port, nonce });
     const cli = join(fileURLToPath(new URL('.', import.meta.url)), 'cli.mjs');
+    if (config.desktopReconnect?.enabled === true) {
+      const reconnect = join(fileURLToPath(new URL('.', import.meta.url)), 'desktop-reconnect.mjs');
+      workers.push(new ManagedProcess({
+        name: 'desktop_reconnect', command: process.execPath, args: [reconnect, '--config', configPath], ipc: true,
+        onStart: child => saveJson(reconnectRecord, { pid: child.pid, startedUtc: new Date().toISOString(), executable: process.execPath, scriptPath: reconnect, configPath }),
+        onExit: child => child?.pid ? removeRecord(reconnectRecord, child.pid) : undefined,
+      }, { ...options, log }));
+    }
     workers.push(new ManagedProcess({
       name: 'gateway', command: process.execPath, args: [cli, '--config', configPath], ipc: true,
       onStart: child => saveJson(gatewayRecord, { pid: child.pid, startedUtc: new Date().toISOString(), executable: process.execPath, scriptPath: cli, configPath }),

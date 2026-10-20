@@ -30,8 +30,10 @@ These observations prove the tested execution paths, not unlimited capacity or
 an OS-wide UI lock. Background execution is a declared tool-use contract; route
 all competing browser and desktop work through the connector.
 
-Automatic startup restores the gateway and relay. After a cold Codex restart,
+This initial release checkpoint predates the durable owner-grant reconnect worker.
+At that checkpoint, automatic startup restored the gateway and relay. After a cold Codex restart,
 the configured controller chat must call `desktop_context_status` once to
 activate its new native lease. A surviving activated registrar renews its lease,
 but native submissions after the controller turn ends were not separately
-verified during this release. See [automatic startup](automatic-startup.md).
+verified during this release. The later [unattended startup verification](verification-startup-2026-10-20.md)
+supersedes this startup limitation for the tested desktop version.

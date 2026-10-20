@@ -32,6 +32,8 @@ audit.jsonl
 connector-process.json
 tunnel-process.json
 desktop-context.json
+desktop-owner.json
+desktop-reconnect-process.json
 .desktop-context.lock
 supervisor-process.json
 ssh-relay-process.json

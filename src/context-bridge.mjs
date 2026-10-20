@@ -26,7 +26,7 @@ export async function readDesktopContext(file, controllerThreadId) {
   } catch { throw unavailable(); }
 }
 
-async function withLeaseLock(dataDir, action) {
+export async function withLeaseLock(dataDir, action) {
   const file = join(dataDir, '.desktop-context.lock');
   let handle;
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -57,7 +57,7 @@ async function withLeaseLock(dataDir, action) {
   }
 }
 
-async function writeContext(file, context) {
+export async function writeContext(file, context) {
   const temporary = `${file}.${randomUUID()}.tmp`;
   try {
     const handle = await open(temporary, 'wx', 0o600);
@@ -133,6 +133,10 @@ async function main() {
         const authorized = caller.threadId === config.controllerThreadId && UUID.test(caller.turnId || '');
         if (authorized && !closed) await withLeaseLock(config.dataDir, async () => {
           context.callerTurnId = caller.turnId;
+          if (config.desktopReconnect?.enabled === true) {
+            const { saveOwnerGrant } = await import('./desktop-reconnect.mjs');
+            await saveOwnerGrant(config.dataDir, { controllerThreadId: config.controllerThreadId, callerTurnId: caller.turnId });
+          }
           await writeContext(file, { ...context, updatedAt: new Date().toISOString() });
           activated = true;
         });

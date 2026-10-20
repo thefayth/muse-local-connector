@@ -23,6 +23,8 @@ Automatic startup adds a private desktop-context lease and supervisor control no
 
 ## Scope and concurrency
 
+Optional unattended Windows reconnection retains a private `desktop-owner.json` grant created from genuine owner-chat registration. It reuses that real caller identity rather than creating another chat or fabricating a turn. Before publishing a lease, the worker verifies the global named-pipe server against the configured installed app's exact signed executable, same Windows user/session, PID, and process creation time. Fresh chat-owned registrations take precedence. Keep the grant private; remove it to revoke unattended renewal. Local files writable by the same Windows account remain within this trust boundary.
+
 Pilot mode uses `allowedThreadIds` with `allowAllTasks: false`. Complete the existing-chat and harmless-computer checks before widening access. Wider task access enables sending instructions to more existing chats; it must not run the whole catalog on startup.
 
 Local proof commands require completed jobs with their correlation receipts, and the computer proof requires an image file. An operator must inspect the actual computer evidence before recording that proof. An image signature check cannot verify what the image depicts.

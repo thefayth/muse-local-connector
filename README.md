@@ -2,7 +2,7 @@
 
 Use a remote assistant such as Muse to find and continue existing chats in the Codex desktop app on your computer. Requests go to those chats through the desktop's own task tools. Computer requests go to a selected chat as instructions, where its available tools and normal action rules apply.
 
-**Experimental.** This prototype depends on the app-tools runtime bundled with Codex desktop. Manual launch uses a Codex execution environment; optional automatic startup uses a Codex-managed MCP registrar to refresh that context. It is not a standalone Codex CLI integration. Bundled runtime changes can require compatibility work.
+**Experimental.** This prototype depends on the app-tools runtime bundled with Codex desktop. Manual launch uses a Codex execution environment. Optional Windows automatic startup retains a genuine owner registration and reconnects to the verified installed app without opening that chat. It is not a standalone Codex CLI integration. Bundled runtime changes can require compatibility work.
 
 This project is independently developed and is not affiliated with Meta, Muse, or OpenAI.
 
@@ -29,8 +29,11 @@ flowchart LR
     Muse["Muse on phone or browser"] -->|"HTTPS + bearer authentication"| Tunnel["Temporary tunnel or fixed HTTPS proxy + SSH relay"]
     Tunnel --> Gateway["Loopback connector on your PC"]
     Gateway --> Native["Bundled Codex app-tools runtime"]
-    Owner["Configured controller chat"] -->|"desktop_context_status after runtime restart"| Registrar["Codex-managed context registrar"]
+    Owner["Configured controller chat"] -->|"One-time owner registration"| Registrar["Codex-managed context registrar"]
     Registrar -->|"Fresh private lease"| Gateway
+    Registrar --> Grant["Private durable owner grant"]
+    Grant --> Reconnect["Supervised Windows reconnect worker"]
+    Reconnect -->|"Verified app peer + fresh lease"| Gateway
     Native --> Chat["Selected existing desktop chat"]
     Chat --> Tools["That chat's available tools"]
     Chat --> Result["Progress and result"]
@@ -85,13 +88,13 @@ This command changes only `maxConcurrentJobs`; it does not start work or restart
 
 To put the existing key on your local clipboard for a secure connector credential field, rerun setup with the same data directory and `-CopyKey`. Setup preserves the existing config and checks that it matches the stored credential. Clear the clipboard after entering the credential.
 
-`controllerThreadId` identifies the chat hosting the connector, while `allowedThreadIds` identifies tasks it may operate on; these serve different purposes. For manual launch, the caller identity can also come from `CODEX_THREAD_ID`, and `CODEX_APP_TOOLS_PIPE_PATH` must be inherited from the Codex environment. With automatic startup, the Codex-managed registrar inherits the desktop endpoint and renews a private context lease; the gateway preserves the configured controller identity. `CODEX_APP_TOOLS_SERVER` optionally selects an explicit installed app-tools server path.
+`controllerThreadId` identifies the owner chat, while `allowedThreadIds` identifies tasks it may operate on; these serve different purposes. For manual launch, the caller identity can also come from `CODEX_THREAD_ID`, and `CODEX_APP_TOOLS_PIPE_PATH` must be inherited from the Codex environment. Automatic Windows reconnection preserves a genuinely registered controller identity and verifies the running installed app before publishing a fresh private lease. `CODEX_APP_TOOLS_SERVER` optionally selects an explicit installed app-tools server path.
 
 Starting from an unrelated terminal will not recreate the desktop IPC context. If the app-tools connection is unavailable, fix the launch context instead of supplying guessed IPC addresses or copying internal pipe credentials.
 
 See [Muse setup](docs/muse-setup.md) for remote connection and the pilot checks. Read [SECURITY.md](SECURITY.md) before exposing the listener through a tunnel.
 
-For a fixed URL, Windows logon startup, and fresh Codex context registration, see [automatic startup](docs/automatic-startup.md). The logon task can launch Codex and supervise the gateway and a restricted SSH relay. After Windows/Codex restarts or replaces its MCP runtime, the configured controller chat must call `desktop_context_status` before native requests can resume. Opening that chat and restoring HTTP/relay service does not activate its new registration. Startup preserves existing jobs and does not send instructions to activate the controller.
+For a fixed URL and Windows logon startup, see [automatic startup](docs/automatic-startup.md). The task launches Codex and supervises the gateway, restricted SSH relay, and optional native reconnect worker. A one-time owner registration enables unattended reconnect after Windows/Codex restarts; the worker does not open the controller chat or start a model turn. Startup preserves existing jobs and never resends uncertain instructions.
 
 ## HTTP interface
 
@@ -173,7 +176,7 @@ Only one active control can be outstanding for a job. Uncertain, submitting, and
 
 Keep personal verification receipts local. Tests should use synthetic IDs and fake desktop responses. Never publish an owner's chat catalog, prompts, screenshots, tunnel secrets, or runtime receipts as demonstration data.
 
-The [2026-10-20 verification record](docs/verification-2026-10-20.md) summarizes the tested concurrency, UI coordination, controls, and startup limits without private runtime data.
+The [2026-10-20 verification record](docs/verification-2026-10-20.md) summarizes the tested concurrency, UI coordination, and controls. The [unattended startup verification](docs/verification-startup-2026-10-20.md) records the later reconnect tests without private runtime data.
 
 After inspecting the actual replies and computer image, record the two completed correlated jobs using the IDs returned by the connector:
 
@@ -195,7 +198,7 @@ The computer evidence must be a locally inspected PNG, JPEG, or WebP file. Recor
 | Computer control | Instruction delegated to a selected existing desktop chat. |
 | Concurrent scheduling | Default four jobs, adjustable from 1 to 32; one active job per chat and one shared UI lane. |
 | Transport to Muse | REST with polling through a temporary HTTPS tunnel or an optional fixed HTTPS proxy and supervised SSH relay. |
-| Automatic startup | Optional current-user Windows logon task, supervised gateway/relay, and fresh Codex context registration. |
+| Automatic startup | Optional current-user Windows logon task, supervised gateway/relay, and native reconnect worker using a private owner grant. |
 | Authentication | Bearer credential verified by the local connector. |
 | Windows credential storage | Existing Codex vault when available; otherwise a connector-owned DPAPI encrypted file. |
 | OAuth | Not implemented. |
@@ -206,7 +209,7 @@ The local pilot and Muse round trip were verified on October 15, 2026, on Window
 
 On October 16, 2026, a real Windows restart verified the current-user logon task, supervised gateway, restricted SSH relay, and early Codex context registration. Muse then authenticated through the fixed HTTPS route and completed fresh serial chat and Calculator jobs in the original chat. Both results returned to Muse with matching receipts; the fresh `7 × 8 = 56` screenshot was independently inspected. The serial run needed no network retries or action approvals. Earlier connection checks did need read retries, so this is not a latency guarantee. The phone app was not separately tested.
 
-That dated restart result predates the current explicit owner-registration requirement. It does not verify unattended native bootstrap for this version; automatic gateway/relay recovery and fresh owner registration are separate prerequisites.
+That dated restart result predates the durable owner-grant reconnect worker. See the [startup verification receipt](docs/verification-startup-2026-10-20.md) for the newer worker's tested recovery paths; a service restart is separate from a full Windows reboot.
 
 The tested temporary route sometimes took 30–60 seconds or timed out on reads. Use bounded read retries and retain request IDs for submissions; a slow response must not cause another instruction to be sent. Test the route from the actual remote client before entering credentials. See the [transport setup notes](docs/muse-setup.md#optional-manual-transport-tunnelmole).
 
@@ -218,7 +221,7 @@ For manual setup, `stop.ps1` stops its tracked Cloudflare tunnel and connector. 
 .\scripts\stop.ps1 -Config "<absolute-private-config.json>"
 ```
 
-After a connector restart, reconcile recorded job IDs against the desktop before sending follow-up work. With manual launch, relaunch the connector from a fresh compatible Codex execution environment after Codex restarts or its IPC resets. With automatic startup, activate a replacement registrar using `desktop_context_status` from the configured controller chat, then verify authenticated `/v1/status`; task requests return 503 while that context is unavailable. Do not automatically replay uncertain submissions.
+After a connector restart, reconcile recorded job IDs against the desktop before sending follow-up work. With manual launch, relaunch the connector from a fresh compatible Codex execution environment after Codex restarts or its IPC resets. With unattended Windows reconnection configured, the supervised worker rebinds the stored owner grant to the verified current app endpoint. Verify authenticated `/v1/status`; native requests return 503 until the app and a valid grant are available. Do not automatically replay uncertain submissions.
 
 For a configuration-only restart in manual setup with a temporary tunnel already running, use `stop.ps1 -Config "<absolute-private-config.json>" -KeepTunnel`, then start the gateway again. This preserves the tunnel hostname. Supervised startup rejects `-KeepTunnel`; follow the [automatic startup](docs/automatic-startup.md) stop/start procedure instead. See [Muse setup](docs/muse-setup.md) for the manual `set-origin` sequence.
 

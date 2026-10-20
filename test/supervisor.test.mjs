@@ -134,6 +134,29 @@ test('private control stop shuts down children and preserves config and job stat
   assert.equal(await readFile(join(dataDir, 'jobs.json'), 'utf8'), jobs);
 });
 
+test('automatic native reconnect is supervised independently and stops without altering owner or jobs', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'muse-reconnect-supervisor-'));
+  const configPath = join(dataDir, 'config.json');
+  await writeFile(configPath, JSON.stringify({ dataDir, port: 18761, desktopReconnect: { enabled: true, appUserModelId: 'Synthetic.Codex!App' }, sshRelay: { host: 'test-relay', remotePort: 23000, localPort: 18761 } }));
+  const grant = JSON.stringify({ controllerThreadId: 'saved-owner', callerTurnId: 'saved-real-turn' });
+  const jobs = JSON.stringify([{ id: 'original-job', status: 'unknown' }]);
+  await writeFile(join(dataDir, 'desktop-owner.json'), grant);
+  await writeFile(join(dataDir, 'jobs.json'), jobs);
+  const spawned = [];
+  const supervisor = await startSupervisor(configPath, { controlPort: 0, processFactory(command, args, options) { const process = child(13000 + spawned.length); spawned.push({ command, args, options, process }); return process; } });
+  t.after(async () => { await supervisor.stop(); await rm(dataDir, { recursive: true, force: true }); });
+  assert.equal(spawned.length, 3);
+  assert.deepEqual(supervisor.workers.map(worker => worker.name), ['desktop_reconnect', 'gateway', 'ssh_relay']);
+  assert.ok(spawned[0].args[0].endsWith('desktop-reconnect.mjs'));
+  assert.equal(spawned[0].options.windowsHide, true);
+  assert.equal(JSON.parse(await readFile(join(dataDir, 'desktop-reconnect-process.json'), 'utf8')).pid, spawned[0].process.pid);
+  await supervisor.stop();
+  assert.deepEqual(spawned[0].process.messages, [{ type: 'connector-shutdown' }]);
+  await assert.rejects(readFile(join(dataDir, 'desktop-reconnect-process.json')), { code: 'ENOENT' });
+  assert.equal(await readFile(join(dataDir, 'desktop-owner.json'), 'utf8'), grant);
+  assert.equal(await readFile(join(dataDir, 'jobs.json'), 'utf8'), jobs);
+});
+
 test('a mismatched control nonce cannot stop a live supervisor', async t => {
   const dataDir = await mkdtemp(join(tmpdir(), 'muse-supervisor-identity-'));
   const configPath = join(dataDir, 'config.json');
